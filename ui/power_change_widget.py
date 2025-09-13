@@ -1,44 +1,31 @@
 # -*- coding: utf-8 -*-
-import os
-import io
 from datetime import datetime
-from dataclasses import dataclass
 from typing import List, Optional
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QComboBox, QMessageBox, QFrame, QTabWidget
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
+    QPushButton, QComboBox, QMessageBox, QFrame
 )
-
-# Matplotlib for Qt
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
-# Excel + Audio
-from openpyxl import Workbook, load_workbook
-from openpyxl.utils import get_column_letter
-from openpyxl.utils.exceptions import InvalidFileException
-from gtts import gTTS
-import pygame
-
-# === Import mô-đun tính toán của bạn ===
-# Giữ nguyên như bạn đã refactor:
+# modules (anh đã tách sẵn)
 from modules.power_logic import CalcConfig, compute_power_change_and_pauses
 from modules.excel_io import ExcelUpdater
 from modules.audio_tts import tts_and_play
-from modules.plotting import make_figure, draw_series
+from modules.plotting import draw_series
 from modules.alarms import check_and_fire
+from ui.result_panel import ResultPanel
 
-# =====================================
-# Widget chính PySide6
-# =====================================
+
+
 class PowerChangeWidget(QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, excel_file: str = "abc.xlsx"):
         super().__init__(parent)
 
-        # --- trạng thái ---
-        self.excel_updater = ExcelUpdater('abc.xlsx')
+        # --- services/state ---
+        self.excel_updater = ExcelUpdater(excel_file)
         self.alarm_played_for_429 = False
         self.alarm_played_for_post_pause = False
         self.alarm_played_for_final_load = False
@@ -98,55 +85,43 @@ class PowerChangeWidget(QWidget):
         master_layout.addLayout(root, 4)
 
         # --- BÊN PHẢI: result_column (kết quả) ---
-        result_column = QVBoxLayout()
-        result_column.setSpacing(6)
-        master_layout.addLayout(result_column, 1)
+        self.result_panel = ResultPanel()
+        master_layout.addWidget(self.result_panel, 1)
 
         # Các nhãn kết quả
-        self.total_load_time_label = QLabel("Load reaching: ")
-        self.time_reaching_429_label = QLabel("429 MW: ")
-        self.post_pause_time_label = QLabel("The holding comp: ")
-        self.hold_complete_label = QLabel("Holding 10M:")
-
-        for w in [self.total_load_time_label, self.time_reaching_429_label,
-                self.post_pause_time_label, self.hold_complete_label]:
-            w.setStyleSheet("font-weight:600;")
-            result_column.addWidget(w, 0, Qt.AlignLeft)  # thêm AlignLeft (giữ AlignTop nếu muốn)
-        result_column.addStretch(1)
-
+        
 
         # --- Khung nhập chính (trong root) ---
         input_row = QHBoxLayout()
         self.start_power_edit = self._labeled_edit(input_row, "Start Power (MW):")
         self.target_power_edit = self._labeled_edit(input_row, "Target Power (MW):")
-        self.start_time_edit = self._labeled_edit(input_row, "Start Time (HH:MM):")
+        self.start_time_edit  = self._labeled_edit(input_row, "Start Time (HH:MM):")
 
-        self.enter_btn = QPushButton("Enter")
-        self.reset_btn = QPushButton("Reset")
+        self.enter_btn  = QPushButton("Enter")
+        self.reset_btn  = QPushButton("Reset")
         self.toggle_btn = QPushButton("⚙")
+
         self.enter_btn.clicked.connect(self.on_enter_clicked)
         self.reset_btn.clicked.connect(self.on_reset_clicked)
         self.toggle_btn.clicked.connect(self.toggle_hidden_layout)
+
         input_row.addWidget(self.enter_btn, 0, Qt.AlignLeft)
         input_row.addWidget(self.reset_btn, 0, Qt.AlignLeft)
         input_row.addWidget(self.toggle_btn, 0, Qt.AlignLeft)
-        input_row.addStretch(1)          # QUAN TRỌNG: cố định pack trái
-
+        input_row.addStretch(1)          # ép trái
         root.addLayout(input_row)
-
-
 
         # Khung nhập bổ sung (Hold)
         hold_row = QHBoxLayout()
         self.holding_load_edit = self._labeled_edit(hold_row, "Holding Load (MW):")
         self.holding_time_edit = self._labeled_edit(hold_row, "Holding Time (HH:MM):")
         self.hold_btn = QPushButton("Hold")
+        self.hold_btn.clicked.connect(self.on_hold_clicked)   # (SỬA) nút Hold được connect
         hold_row.addWidget(self.hold_btn, 0, Qt.AlignLeft)
-        hold_row.addStretch(1)           # ép trái
+        hold_row.addStretch(1)
         root.addLayout(hold_row)
 
-
-        # Matplotlib Figure
+        # Matplotlib Figure (giữ 1 canvas suốt vòng đời widget)
         self.figure = Figure(figsize=(6, 4), dpi=120)
         self.ax = self.figure.add_subplot(111)
         self.ax.set_title('TREND: POWER DEPEND ON TIMES')
@@ -172,9 +147,9 @@ class PowerChangeWidget(QWidget):
         # pause + pulverizer
         pause_row = QHBoxLayout()
         self.pause_429_edit = self._labeled_edit(pause_row, "Pause at 429 MW (min):",
-                                                default=str(self.pause_time_429_min), width=60)
+                                                 default=str(self.pause_time_429_min), width=60)
         self.pause_hold_edit = self._labeled_edit(pause_row, "Hold duration at holding MW (min):",
-                                                default=str(self.pause_time_hold_min), width=60)
+                                                  default=str(self.pause_time_hold_min), width=60)
 
         label = QLabel("Pulverizer Mode:")
         self.pulverizer_combo = QComboBox()
@@ -183,9 +158,8 @@ class PowerChangeWidget(QWidget):
 
         pause_row.addWidget(label, 0, Qt.AlignLeft)
         pause_row.addWidget(self.pulverizer_combo, 0, Qt.AlignLeft)
-        pause_row.addStretch(1)          # ép trái
+        pause_row.addStretch(1)
         hidden_layout.addLayout(pause_row)
-
 
         # Ẩn ngay từ đầu
         self.hidden_frame.setVisible(False)
@@ -267,24 +241,26 @@ class PowerChangeWidget(QWidget):
         self.hold_complete_time = result.hold_complete_time
 
         # Cập nhật nhãn
-        self.total_load_time_label.setText(
-            "Load reaching: " + (self.final_load_time.strftime("%H:%M") if self.final_load_time else "")
+        self.result_panel.set_total_load_time(
+            self.final_load_time.strftime("%H:%M") if self.final_load_time else None
         )
+
         if self.time_reaching_429:
-            self.time_reaching_429_label.setText(f"429 MW: {self.time_reaching_429.strftime('%H:%M')}")
-            self.post_pause_time_label.setText(
-                "The holding complete: " + (self.post_pause_time.strftime("%H:%M") if self.post_pause_time else "")
+            self.result_panel.set_429_time(self.time_reaching_429.strftime("%H:%M"))
+            self.result_panel.set_post_pause_time(
+                self.post_pause_time.strftime("%H:%M") if self.post_pause_time else None
             )
         else:
-            self.time_reaching_429_label.setText("Do not reach 429 MW in the load changing process.")
-            self.post_pause_time_label.setText("")
+            self.result_panel.set_429_time(None)
+            self.result_panel.set_post_pause_time(None)
 
-        if self.hold_complete_time:
-            self.hold_complete_label.setText(f"Holding {self.pause_time_hold_min}M: {self.hold_complete_time.strftime('%H:%M')}")
-        else:
-            self.hold_complete_label.setText("Holding 10M:")
+        self.result_panel.set_hold_complete(
+            self.hold_complete_time.strftime("%H:%M") if self.hold_complete_time else None,
+            minutes=self.pause_time_hold_min
+        )
 
-        # Vẽ đồ thị
+
+        # Vẽ đồ thị (KHÔNG tạo FigureCanvas mới)
         self.update_plot()
 
         # Ghi log Excel
@@ -310,58 +286,56 @@ class PowerChangeWidget(QWidget):
             return
 
         holding_time = self.holding_time_edit.text().strip()
-        QMessageBox.information(self, "Holding Information", f"Holding Load: {holding_load}\nHolding Time: {holding_time}")
+        QMessageBox.information(self, "Holding Information",
+                                f"Holding Load: {holding_load}\nHolding Time: {holding_time}")
 
         data1 = {
             'time_now_hold': datetime.now(),
-            '........': "",
-            '.........': "",
             'holding_time': holding_time,
             'holding_load': f"Hold the load at {holding_load} MW/ Giữ tải tại {holding_load} MW",
         }
-        self.excel_updater.append_data1(data1)
+        # (SỬA) dùng hàm đúng tên trong ExcelUpdater đã tách
+        if hasattr(self.excel_updater, "append_data_hold"):
+            self.excel_updater.append_data_hold(data1)
+        else:
+            # fallback nếu class cũ
+            self.excel_updater.append_data1(data1)
 
     def on_reset_clicked(self):
-        # Xoá inputs
+        # 1) Xoá inputs
         self.start_power_edit.clear()
         self.target_power_edit.clear()
         self.start_time_edit.clear()
         self.holding_load_edit.clear()
         self.holding_time_edit.clear()
 
-        # Reset cờ báo động
+        # 2) Reset cờ báo động
         self.alarm_played_for_429 = False
         self.alarm_played_for_post_pause = False
         self.alarm_played_for_final_load = False
         self.alarm_played_for_hold_complete = False
         self.messagebox_shown = False
 
-        # Reset nhãn kết quả
-        self.total_load_time_label.setText("Load reaching: ")
-        self.time_reaching_429_label.setText("429 MW: ")
-        self.post_pause_time_label.setText("The holding comp: ")
-        self.hold_complete_label.setText("Holding 10M:")
+        # 3) Reset panel kết quả (DÙNG API ResultPanel)
+        self.result_panel.reset()
 
-        # Xoá series + kết quả thời gian
-        self.times1.clear()
-        self.powers1.clear()
-        self.times2.clear()
-        self.powers2.clear()
-
+        # 4) Xoá series + kết quả thời gian
+        self.times1.clear(); self.powers1.clear()
+        self.times2.clear(); self.powers2.clear()
         self.final_load_time = None
         self.time_reaching_429 = None
         self.post_pause_time = None
         self.time_holding_462 = None
         self.hold_complete_time = None
 
-        # Làm mới đồ thị
+        # 5) Làm mới đồ thị (KHÔNG tạo Figure/Canvas mới)
         self.ax.clear()
         self.ax.set_title('TREND: POWER DEPEND ON TIMES')
         self.ax.set_xlabel('TIMES')
         self.ax.set_ylabel('POWER (MW)')
         self.canvas.draw()
-        self.figure, self.ax = make_figure()
-        self.canvas = FigureCanvas(self.figure)
+
+
     # ----------------------
     # Plotting
     # ----------------------
@@ -370,6 +344,10 @@ class PowerChangeWidget(QWidget):
             {"x": self.times1, "y": self.powers1, "label": "Main Load Change"},
             {"x": self.times2, "y": self.powers2, "label": "Hidden Layout 2"},
         ]
+        self.ax.clear()
+        self.ax.set_title('TREND: POWER DEPEND ON TIMES')
+        self.ax.set_xlabel('TIMES')
+        self.ax.set_ylabel('POWER (MW)')
         draw_series(self.ax, series)
         self.figure.autofmt_xdate()
         self.canvas.draw()
@@ -396,30 +374,3 @@ class PowerChangeWidget(QWidget):
         self.alarm_played_for_post_pause = flags["holding_complete"]
         self.alarm_played_for_final_load = flags["final_load"]
         self.alarm_played_for_hold_complete = flags["hold_10_min"]
-
-
-# =========================
-# App launcher
-# =========================
-def main():
-    import sys
-    app = QApplication(sys.argv)
-
-    win = QWidget()
-    win.setWindowTitle("Power Change Application (PySide6)")
-    win.resize(1000, 800)
-
-    tabs = QTabWidget()
-    tab1 = PowerChangeWidget()
-    tabs.addTab(tab1, "Power Change")
-
-    layout = QVBoxLayout(win)
-    layout.addWidget(tabs)
-    win.setLayout(layout)
-    win.show()
-
-    sys.exit(app.exec())
-
-
-if __name__ == "__main__":
-    main()

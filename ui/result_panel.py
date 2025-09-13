@@ -1,0 +1,94 @@
+# -*- coding: utf-8 -*-
+from typing import Optional
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QFrame, QVBoxLayout, QLabel
+
+
+class ResultPanel(QFrame):
+    """Bảng kết quả bên phải: độc lập layout + style + API set/reset."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("ResultPanel")
+        self._build_ui()
+        self._apply_style()
+
+    def _build_ui(self):
+        self.layout = QVBoxLayout(self)
+        self.layout.setSpacing(6)
+
+        self.total_load_time_label = QLabel("Load reaching: ")
+        self.time_reaching_429_label = QLabel("429 MW: ")
+        self.post_pause_time_label = QLabel("The holding comp: ")
+        self.hold_complete_label = QLabel("Holding 10M:")
+
+        for w in [
+            self.total_load_time_label,
+            self.time_reaching_429_label,
+            self.post_pause_time_label,
+            self.hold_complete_label,
+        ]:
+            w.setProperty("role", "result")
+            self.layout.addWidget(w, 0, Qt.AlignLeft)
+
+        self.layout.addStretch(1)
+
+    def _apply_style(self):
+        self.setStyleSheet("""
+            QFrame#ResultPanel {
+                background: #0d1117;
+                border-left: 4px solid #00e676;
+                border-top: 1px solid #20262e;
+                border-bottom: 1px solid #20262e;
+                border-right: 1px solid #20262e;
+                border-radius: 8px;
+                padding: 8px;
+            }
+            QLabel[role="result"] {
+                font-size: 16px;
+                letter-spacing: 0.3px;
+            }
+        """)
+
+
+    # ---------- Public API ----------
+    def reset(self):
+        self.total_load_time_label.setText("Load reaching: ")
+        self.time_reaching_429_label.setText("429 MW: ")
+        self.post_pause_time_label.setText("The holding comp: ")
+        self.hold_complete_label.setText("Holding 10M:")
+
+    def set_total_load_time(self, t: Optional[str]):
+        self.total_load_time_label.setText(
+            f'<span style="color:#b0bec5;">Load reaching:</span> '
+            f'<span style="color:#00e676;font-weight:700;">{t or ""}</span>'
+        )
+
+    def set_429_time(self, t: Optional[str]):
+        if t:
+            self.time_reaching_429_label.setText(
+                f'<span style="color:#b0bec5;">429 MW:</span> '
+                f'<span style="color:#00e676;font-weight:700;">{t}</span>'
+            )
+        else:
+            self.time_reaching_429_label.setText(
+                '<span style="color:#ffab91;font-weight:700;">'
+                'Do not reach 429 MW in the load changing process.</span>'
+            )
+
+    def set_post_pause_time(self, t: Optional[str]):
+        self.post_pause_time_label.setText(
+            f'<span style="color:#b0bec5;">The holding complete:</span> '
+            f'<span style="color:#00e676;font-weight:700;">{t or ""}</span>'
+        )
+
+    def set_hold_complete(self, t: Optional[str], minutes: int = 10):
+        if t:
+            self.hold_complete_label.setText(
+                f'<span style="color:#b0bec5;">Holding {minutes}M:</span> '
+                f'<span style="color:#00e676;font-weight:700;">{t}</span>'
+            )
+        else:
+            self.hold_complete_label.setText(
+                '<span style="color:#b0bec5;">Holding 10M:</span>'
+            )
+
