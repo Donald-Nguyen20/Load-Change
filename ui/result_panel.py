@@ -16,10 +16,10 @@ class ResultPanel(QFrame):
         self.layout = QVBoxLayout(self)
         self.layout.setSpacing(6)
 
-        self.total_load_time_label = QLabel("Load reaching: ")
+        self.total_load_time_label = QLabel("Load reached: ")
         self.time_reaching_429_label = QLabel("429 MW: ")
-        self.post_pause_time_label = QLabel("The holding comp: ")
-        self.hold_complete_label = QLabel("Holding 10M:")
+        self.post_pause_time_label = QLabel("Holding at 429 compl: ")
+        self.hold_complete_label = QLabel("Holding 10M compl:")
 
         for w in [
             self.total_load_time_label,
@@ -55,7 +55,7 @@ class ResultPanel(QFrame):
         self.total_load_time_label.setText("Load reaching: ")
         self.time_reaching_429_label.setText("429 MW: ")
         self.post_pause_time_label.setText("The holding comp: ")
-        self.hold_complete_label.setText("Holding 10M:")
+        self.hold_complete_label.setText("Holding 10M completed:")
 
     def set_total_load_time(self, t: Optional[str]):
         self.total_load_time_label.setText(
@@ -84,7 +84,7 @@ class ResultPanel(QFrame):
     def set_hold_complete(self, t: Optional[str], minutes: int = 10):
         if t:
             self.hold_complete_label.setText(
-                f'<span style="color:#b0bec5;">Holding {minutes}M:</span> '
+                f'<span style="color:#b0bec5;">Holding 10M completed:</span> '
                 f'<span style="color:#00e676;font-weight:700;">{t}</span>'
             )
         else:
