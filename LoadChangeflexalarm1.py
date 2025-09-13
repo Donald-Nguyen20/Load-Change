@@ -25,60 +25,11 @@ import pygame
 # === Import mô-đun tính toán của bạn ===
 # Giữ nguyên như bạn đã refactor:
 from modules.power_logic import CalcConfig, compute_power_change_and_pauses
-
-
-# =========================
-# ExcelUpdater (giữ nguyên)
-# =========================
-class ExcelUpdater:
-    """CLASS XUẤT DỮ LIỆU TĂNG GIẢM TẢI TRONG CA"""
-    def __init__(self, file_name: str):
-        self.file_name = file_name
-        if os.path.exists(self.file_name):
-            try:
-                self.wb = load_workbook(filename=self.file_name)
-            except InvalidFileException:
-                self.wb = Workbook()
-        else:
-            self.wb = Workbook()
-        self.sheet = self.wb.active
-
-    def append_data(self, data: dict):
-        row = self.sheet.max_row + 1
-        col = 1
-        for _, value in data.items():
-            column_letter = get_column_letter(col)
-            self.sheet[f'{column_letter}{row}'] = value
-            col += 1
-        self.wb.save(self.file_name)
-
-    def append_data1(self, data1: dict):
-        row = self.sheet.max_row + 1
-        col = 1
-        for _, value in data1.items():
-            column_letter = get_column_letter(col)
-            self.sheet[f'{column_letter}{row}'] = value
-            col += 1
-        self.wb.save(self.file_name)
-
-
-# =====================================
-# Tiện ích âm thanh (gTTS + pygame)
-# =====================================
-def tts_and_play(message: str):
-    try:
-        tts = gTTS(text=message, lang="en")
-        audio_stream = io.BytesIO()
-        tts.write_to_fp(audio_stream)
-        audio_stream.seek(0)
-        if not pygame.mixer.get_init():
-            pygame.mixer.init()
-        pygame.mixer.music.load(audio_stream, "mp3")
-        pygame.mixer.music.play()
-    except Exception as e:
-        print(f"❌ Lỗi phát âm thanh: {e}")
-
-
+from modules.excel_io import ExcelUpdater
+from modules.audio_tts import tts_and_play
+from modules.plotting import make_figure, draw_series
+from modules.alarms import check_and_fire
+from modules.audio_tts import tts_and_play
 # =====================================
 # Widget chính PySide6
 # =====================================
@@ -395,27 +346,17 @@ class PowerChangeWidget(QWidget):
         self.ax.set_xlabel('TIMES')
         self.ax.set_ylabel('POWER (MW)')
         self.canvas.draw()
-
+        self.figure, self.ax = make_figure()
+        self.canvas = FigureCanvas(self.figure)
     # ----------------------
     # Plotting
     # ----------------------
     def update_plot(self):
-        self.ax.clear()
-
-        # Vẽ main series nếu có
-        if self.times1 and self.powers1:
-            self.ax.plot(self.times1, self.powers1, marker='o', linestyle='-', label='Main Load Change')
-
-        # Vẽ series thứ 2 (nếu sau này bạn dùng)
-        if self.times2 and self.powers2:
-            self.ax.plot(self.times2, self.powers2, marker='o', linestyle='-', label='Hidden Layout 2')
-
-        if self.times1 or self.times2:
-            self.ax.legend()
-
-        self.ax.set_title('TREND: POWER DEPEND ON TIMES')
-        self.ax.set_xlabel('TIMES')
-        self.ax.set_ylabel('POWER (MW)')
+        series = [
+            {"x": self.times1, "y": self.powers1, "label": "Main Load Change"},
+            {"x": self.times2, "y": self.powers2, "label": "Hidden Layout 2"},
+        ]
+        draw_series(self.ax, series)
         self.figure.autofmt_xdate()
         self.canvas.draw()
 
@@ -424,44 +365,23 @@ class PowerChangeWidget(QWidget):
     # ----------------------
     def check_and_alarm(self):
         now = datetime.now()
-        s_now = now.hour * 3600 + now.minute * 60 + now.second
-
-        def due(dt: Optional[datetime]) -> bool:
-            if not dt:
-                return False
-            s_alarm = dt.hour * 3600 + dt.minute * 60
-            return s_now >= s_alarm
-
-        # Map mốc -> (thời điểm, cờ đã báo)
-        alarm_map = [
-            ("429", self.time_reaching_429, "alarm_played_for_429"),
-            ("holding_complete", self.post_pause_time, "alarm_played_for_post_pause"),
-            ("final_load", self.final_load_time, "alarm_played_for_final_load"),
-            ("hold_10_min", self.hold_complete_time, "alarm_played_for_hold_complete"),
-        ]
-
-        for key, t_alarm, flag_name in alarm_map:
-            if t_alarm and not getattr(self, flag_name):
-                if due(t_alarm):
-                    tts_and_play(self.alarm_texts[key])
-                    setattr(self, flag_name, True)
-
-        # Khi đạt final_load -> popup nhắc chế độ
-        if not self.messagebox_shown and self.alarm_played_for_final_load:
-            try:
-                target_power_value = float(self.target_power_edit.text())
-                if target_power_value >= self.final_load_mw:
-                    control_mode_message = "Check the control mode: LL MODE"
-                    scc_mode_message = "Check the SCC mode: SCC HIGHT MODE"
-                else:
-                    control_mode_message = "Check the control mode: GOV MODE"
-                    scc_mode_message = "Check the SCC mode: SCC AUTO MODE"
-
-                QMessageBox.information(self, "Control Mode", control_mode_message)
-                QMessageBox.information(self, "SCC Mode", scc_mode_message)
-                self.messagebox_shown = True
-            except ValueError:
-                pass
+        timeline = {
+            "429": self.time_reaching_429,
+            "holding_complete": self.post_pause_time,
+            "final_load": self.final_load_time,
+            "hold_10_min": self.hold_complete_time,
+        }
+        flags = {
+            "429": self.alarm_played_for_429,
+            "holding_complete": self.alarm_played_for_post_pause,
+            "final_load": self.alarm_played_for_final_load,
+            "hold_10_min": self.alarm_played_for_hold_complete,
+        }
+        flags = check_and_fire(now, timeline, flags, tts_and_play, self.alarm_texts)
+        self.alarm_played_for_429 = flags["429"]
+        self.alarm_played_for_post_pause = flags["holding_complete"]
+        self.alarm_played_for_final_load = flags["final_load"]
+        self.alarm_played_for_hold_complete = flags["hold_10_min"]
 
 
 # =========================
