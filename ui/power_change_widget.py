@@ -44,6 +44,7 @@ class PowerChangeWidget(QWidget):
         self.alarm_played_for_post_pause = False
         self.alarm_played_for_final_load = False
         self.alarm_played_for_hold_complete = False
+        self.alarm_played_for_override = False
         self.messagebox_shown = False
 
         # thresholds + alarm texts
@@ -56,6 +57,7 @@ class PowerChangeWidget(QWidget):
             "holding_complete": "Holding complete at 462 MW",
             "final_load": "Final target load achieved, To pay Attention to check control mode and SCC Speed mode",
             "hold_10_min": "Holding 10 minutes completed",
+            "override": "Override load completed",
         }
 
         # users’ pause config + pulverizer mode
@@ -75,6 +77,7 @@ class PowerChangeWidget(QWidget):
         self.post_pause_time: Optional[datetime] = None
         self.time_holding_462: Optional[datetime] = None
         self.hold_complete_time: Optional[datetime] = None
+        self.override_complete_time: Optional[datetime] = None
 
         # --- UI ---
         self._build_ui()
@@ -174,6 +177,8 @@ class PowerChangeWidget(QWidget):
         self.edit_alarm_hold_comp = self._labeled_edit(hidden_layout, "Holding Complete Alert:", default=self.alarm_texts["holding_complete"], width=500)
         self.edit_alarm_final = self._labeled_edit(hidden_layout, "Final Load Alert:", default=self.alarm_texts["final_load"], width=500)
         self.edit_alarm_hold10 = self._labeled_edit(hidden_layout, "Hold 10 Min Alert:", default=self.alarm_texts["hold_10_min"], width=500)
+        self.edit_alarm_override = self._labeled_edit(hidden_layout, "Override Alert:", default=self.alarm_texts["override"], width=500)
+
 
         # pause + pulverizer
         pause_row = QHBoxLayout()
@@ -259,6 +264,7 @@ class PowerChangeWidget(QWidget):
         self.alarm_texts["holding_complete"] = self.edit_alarm_hold_comp.text()
         self.alarm_texts["final_load"] = self.edit_alarm_final.text()
         self.alarm_texts["hold_10_min"] = self.edit_alarm_hold10.text()
+        self.alarm_texts["override"] = self.edit_alarm_override.text() 
 
         try:
             self.pause_time_429_min = int(self.pause_429_edit.text() or "0")
@@ -381,6 +387,9 @@ class PowerChangeWidget(QWidget):
         self.alarm_played_for_final_load = False
         self.alarm_played_for_hold_complete = False
         self.messagebox_shown = False
+        self.override_complete_time = None
+        self.alarm_played_for_override = False
+
 
         # 3) Reset panel kết quả (DÙNG API ResultPanel)
         self.result_panel.reset()
@@ -441,18 +450,24 @@ class PowerChangeWidget(QWidget):
             "holding_complete": self.post_pause_time,
             "final_load": self.final_load_time,
             "hold_10_min": self.hold_complete_time,
+            "override": self.override_complete_time,  # ⬅️ NEW
         }
         flags = {
             "429": self.alarm_played_for_429,
             "holding_complete": self.alarm_played_for_post_pause,
             "final_load": self.alarm_played_for_final_load,
             "hold_10_min": self.alarm_played_for_hold_complete,
+            "override": self.alarm_played_for_override,  # ⬅️ NEW
         }
         flags = check_and_fire(now, timeline, flags, tts_and_play, self.alarm_texts)
+
+        # cập nhật cờ
         self.alarm_played_for_429 = flags["429"]
         self.alarm_played_for_post_pause = flags["holding_complete"]
         self.alarm_played_for_final_load = flags["final_load"]
         self.alarm_played_for_hold_complete = flags["hold_10_min"]
+        self.alarm_played_for_override = flags["override"]  # ⬅️ NEW
+
 
     #Hàm “Enter để nối lệnh” có kiểm tra nằm trong HOLD lệnh trước
     def on_add_command_via_enter(self):
@@ -489,6 +504,10 @@ class PowerChangeWidget(QWidget):
         new_cmd.scheduled_start = scheduled_dt
         self.command_queue.append(new_cmd)
         self.rebuild_joined_plan()
+
+        # mốc hoàn thành lệnh nối = ramp end của lệnh nối (đã set vào hold_start)
+        self.override_complete_time = new_cmd.hold_start
+        self.alarm_played_for_override = False  # cho phép chuông lần này
 
     # --- DEBUG PRINT thời gian hoàn thành lệnh nối ---
         def _fmt(dt): return dt.strftime("%H:%M") if dt else "—"
@@ -529,7 +548,7 @@ class PowerChangeWidget(QWidget):
             scheduled_start = required_start
             action = "Tăng (sau HOLD_END)" if is_increasing else "Giảm (sau HOLD_END + 45')"
             msg = (
-                "Thời điểm anh nhập KHÔNG nằm trong giai đoạn HOLD của lệnh trước.\n"
+                "Thời điểm anh nhập nằm trong giai đoạn HOLD của lệnh trước.\n"
                 "Để đảm bảo hold đủ thời gian, lệnh kế sẽ được tự động dời theo quy định:\n"
                 f"- {action} theo mốc 429 MW.\n"
                 f"Giờ người nhập: {user_dt.strftime('%H:%M')}\n"
