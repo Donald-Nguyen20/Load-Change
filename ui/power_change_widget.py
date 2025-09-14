@@ -15,12 +15,12 @@ from matplotlib.figure import Figure
 from modules.power_logic import CalcConfig, compute_power_change_and_pauses
 from modules.excel_io import ExcelUpdater
 from modules.audio_tts import tts_and_play
-from modules.plotting import draw_series
 from modules.alarms import check_and_fire
 from ui.result_panel import ResultPanel
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from modules.plotting import draw_main_and_joined 
 
 @dataclass
 class Command:
@@ -45,6 +45,8 @@ class PowerChangeWidget(QWidget):
         self.alarm_played_for_final_load = False
         self.alarm_played_for_hold_complete = False
         self.alarm_played_for_override = False
+        self._cut_after_join = False
+
         self.messagebox_shown = False
 
         # thresholds + alarm texts
@@ -98,6 +100,7 @@ class PowerChangeWidget(QWidget):
         self.command_queue: list[Command] = []
         self.current_plan_segments: list[dict] = []
         self.default_hold_minutes = 10  # hoặc lấy từ cấu hình của anh
+        self._cut_after_join = False
 
 
 
@@ -389,6 +392,8 @@ class PowerChangeWidget(QWidget):
         self.messagebox_shown = False
         self.override_complete_time = None
         self.alarm_played_for_override = False
+        self._cut_after_join = False
+
 
 
         # 3) Reset panel kết quả (DÙNG API ResultPanel)
@@ -420,18 +425,60 @@ class PowerChangeWidget(QWidget):
     # ----------------------
     # Plotting
     # ----------------------
+
     def update_plot(self):
-        series = [
-            {"x": self.times1, "y": self.powers1, "label": "Main Load Change"},
-            {"x": self.times2, "y": self.powers2, "label": "Hidden Layout 2"},
-        ]
-        self.ax.clear()
-        self.ax.set_title('TREND: POWER DEPEND ON TIMES')
-        self.ax.set_xlabel('TIMES')
-        self.ax.set_ylabel('POWER (MW)')
-        draw_series(self.ax, series)
+        main_xy = {"x": self.times1, "y": self.powers1, "label": "Main Load Change"} \
+                if (self.times1 and self.powers1) else None
+
+        joined_segments = self.current_plan_segments or None
+
+        hold_windows = []
+        if self.time_reaching_429 and self.post_pause_time:
+            hold_windows.append((self.time_reaching_429, self.post_pause_time, "Hold @429"))
+        if self.time_holding_462 and self.hold_complete_time:
+            hold_windows.append((self.time_holding_462, self.hold_complete_time, "Hold @462"))
+
+        override_point = None
+        if getattr(self, "override_complete_time", None) and self.command_queue:
+            last_cmd = self.command_queue[-1]
+            override_point = (self.override_complete_time, last_cmd.target_mw, "Override")
+
+        # ⬅️ NEOS
+        # --- xác định cắt và điểm bắt đầu join ---
+        # Mặc định KHÔNG cắt gì và KHÔNG vẽ nối
+        trim_time = None
+        trim_mw   = None
+        start_time = None
+        start_mw   = None
+
+        # Chỉ khi user đã bấm "Thêm lệnh" và đã có plan nối
+        if self._cut_after_join:
+    # CẮT MAIN ở đúng HOLD_END (post_pause_time).
+    # Nếu vì lý do nào đó chưa có post_pause_time, fallback sang mốc đầu của plan nối.
+            trim_time = self.post_pause_time
+            if trim_time is None and self.current_plan_segments:
+                trim_time = self.current_plan_segments[0]["t"]
+            if trim_time is not None:
+                trim_mw = self.threshold_429
+
+        # Phần nối vẫn bắt đầu từ mốc đầu tiên của plan nối (HOLD_END hoặc +45' tùy tăng/giảm)
+        if self._cut_after_join and self.current_plan_segments:
+            start_time = self.current_plan_segments[0]["t"]
+            start_mw   = self.threshold_429
+
+        draw_main_and_joined(
+            self.ax,
+            main_xy=main_xy,
+            joined_segments=joined_segments,
+            hold_windows=hold_windows,
+            override_point=override_point,
+            trim_time=trim_time, trim_mw=trim_mw,
+            start_time=start_time, start_mw=start_mw,
+        )
         self.figure.autofmt_xdate()
         self.canvas.draw()
+
+
     def _tick_time_edits(self):
         now = QTime.currentTime()
         # Cập nhật nếu đang ở chế độ live và không có focus (tránh ghi đè khi người dùng đang gõ)
@@ -481,8 +528,8 @@ class PowerChangeWidget(QWidget):
         t = self.join_time_edit.time()
         user_dt = datetime.now().replace(hour=t.hour(), minute=t.minute(), second=0, microsecond=0)
 
-        # start_mw hiện tại: target của lệnh trước, nếu chưa có thì mặc định 429
-        start_mw_current = (self.command_queue[-1].target_mw if self.command_queue else self.threshold_429)
+
+        start_mw_current = self.threshold_429
 
         new_cmd = Command(
             start_mw=start_mw_current,
@@ -504,6 +551,10 @@ class PowerChangeWidget(QWidget):
         new_cmd.scheduled_start = scheduled_dt
         self.command_queue.append(new_cmd)
         self.rebuild_joined_plan()
+        # Từ bây giờ mới cắt main trên plot
+        self._cut_after_join = True
+        self.update_plot()
+
 
         # mốc hoàn thành lệnh nối = ramp end của lệnh nối (đã set vào hold_start)
         self.override_complete_time = new_cmd.hold_start
@@ -523,6 +574,7 @@ class PowerChangeWidget(QWidget):
             self.result_panel.set_override_complete(new_cmd.hold_start.strftime("%H:%M"))
         else:
             self.result_panel.set_override_complete(None)
+        self.update_plot() 
     def _validate_and_schedule_next_command(self, new_cmd: Command) -> tuple[bool, datetime, str]:
         """
         target > 429 -> TĂNG  ⇒ bắt đầu sau HOLD_END(429)
@@ -618,7 +670,7 @@ class PowerChangeWidget(QWidget):
                 scheduled = cmd.scheduled_start
 
             segs, h_start, h_end = self._build_segments_for_one_command(
-                start_mw=cmd.start_mw,
+                start_mw=self.threshold_429,
                 target_mw=cmd.target_mw,
                 start_dt=scheduled,
                 hold_minutes=cmd.hold_minutes
@@ -631,7 +683,7 @@ class PowerChangeWidget(QWidget):
             plan_segments.extend(segs)
 
         self.current_plan_segments = plan_segments
-        self.render_plan()
+        self.update_plot()
         self.persist_plan_to_excel()
     
     def render_plan(self):
