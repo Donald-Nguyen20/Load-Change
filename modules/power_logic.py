@@ -92,7 +92,7 @@ def compute_power_change_and_pauses(
                 and time_holding_462 is None):
                 time_holding_462 = t
                 if cfg.pulverizer_mode == "3 Puls":
-                    t += timedelta(minutes=10)
+                    t += timedelta(minutes=15)
                 else:
                     t += timedelta(minutes=cfg.pause_time_hold_min)
                 hold_complete_time = t

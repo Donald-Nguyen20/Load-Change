@@ -17,15 +17,17 @@ class ResultPanel(QFrame):
         self.layout.setSpacing(6)
 
         self.total_load_time_label = QLabel("Load reached: ")
+        self.hold_complete_label = QLabel("Holding 462MW compl:")
         self.time_reaching_429_label = QLabel("429 MW: ")
-        self.post_pause_time_label = QLabel("Holding at 429 compl: ")
-        self.hold_complete_label = QLabel("Holding 10M compl:")
+        self.post_pause_time_label = QLabel("Holding 429MW compl: ")
+
 
         for w in [
             self.total_load_time_label,
+            self.hold_complete_label,
             self.time_reaching_429_label,
             self.post_pause_time_label,
-            self.hold_complete_label,
+            
         ]:
             w.setProperty("role", "result")
             self.layout.addWidget(w, 0, Qt.AlignLeft)
@@ -53,9 +55,10 @@ class ResultPanel(QFrame):
     # ---------- Public API ----------
     def reset(self):
         self.total_load_time_label.setText("Load reaching: ")
+        self.hold_complete_label.setText("Holding 462MW comp:")
         self.time_reaching_429_label.setText("429 MW: ")
-        self.post_pause_time_label.setText("The holding comp: ")
-        self.hold_complete_label.setText("Holding 10M completed:")
+        self.post_pause_time_label.setText("Holding 429MW comp: ")
+        
 
     def set_total_load_time(self, t: Optional[str]):
         self.total_load_time_label.setText(

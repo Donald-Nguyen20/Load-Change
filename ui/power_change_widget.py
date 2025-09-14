@@ -2,9 +2,9 @@
 from datetime import datetime
 from typing import List, Optional
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QTime
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QTimeEdit,
     QPushButton, QComboBox, QMessageBox, QFrame
 )
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
@@ -64,6 +64,14 @@ class PowerChangeWidget(QWidget):
 
         # --- UI ---
         self._build_ui()
+        # --- live time for QTimeEdit ---
+        self._live_start_time = True    # Start Time auto-run ban đầu
+        self._live_hold_time  = False   # Holding Time mặc định nhập tay
+
+        self._time_timer = QTimer(self)
+        self._time_timer.timeout.connect(self._tick_time_edits)
+        self._time_timer.start(1000)    # tick mỗi giây
+
 
         # Timer kiểm tra mốc báo động (không hiển thị đồng hồ)
         self.check_timer = QTimer(self)
@@ -95,7 +103,8 @@ class PowerChangeWidget(QWidget):
         input_row = QHBoxLayout()
         self.start_power_edit = self._labeled_edit(input_row, "Start Power (MW):")
         self.target_power_edit = self._labeled_edit(input_row, "Target Power (MW):")
-        self.start_time_edit  = self._labeled_edit(input_row, "Start Time (HH:MM):")
+        self.start_time_edit  = self._labeled_timeedit(input_row, "Start Time (HH:MM):", width=90, default_now=True)
+
 
         self.enter_btn  = QPushButton("Enter")
         self.reset_btn  = QPushButton("Reset")
@@ -114,7 +123,7 @@ class PowerChangeWidget(QWidget):
         # Khung nhập bổ sung (Hold)
         hold_row = QHBoxLayout()
         self.holding_load_edit = self._labeled_edit(hold_row, "Holding Load (MW):")
-        self.holding_time_edit = self._labeled_edit(hold_row, "Holding Time (HH:MM):")
+        self.holding_time_edit = self._labeled_timeedit(hold_row, "Holding Time (HH:MM):", width=90, default_now=False)
         self.hold_btn = QPushButton("Hold")
         self.hold_btn.clicked.connect(self.on_hold_clicked)   # (SỬA) nút Hold được connect
         hold_row.addWidget(self.hold_btn, 0, Qt.AlignLeft)
@@ -180,6 +189,32 @@ class PowerChangeWidget(QWidget):
         row.addWidget(lab)
         row.addWidget(edit)
         return edit
+    def _labeled_timeedit(self, parent_layout_or_widget, label: str, *, width: int = 100,
+                      default_now: bool = True) -> QTimeEdit:
+        if isinstance(parent_layout_or_widget, QVBoxLayout):
+            row = QHBoxLayout()
+            parent_layout_or_widget.addLayout(row)
+        else:
+            row = parent_layout_or_widget
+        lab = QLabel(label)
+        te  = QTimeEdit()
+        te.setDisplayFormat("HH:mm")
+        te.setFixedWidth(width)
+        if default_now:
+            te.setTime(QTime.currentTime())
+
+        # Khi người dùng chỉnh tay -> tắt live của ô tương ứng
+        def stop_live():
+            if te is self.start_time_edit:
+                self._live_start_time = False
+            elif te is self.holding_time_edit:
+                self._live_hold_time = False
+
+        te.editingFinished.connect(stop_live)
+
+        row.addWidget(lab)
+        row.addWidget(te)
+        return te
 
     # ----------------------
     # Event handlers
@@ -191,7 +226,7 @@ class PowerChangeWidget(QWidget):
         try:
             start_power = float(self.start_power_edit.text())
             target_power = float(self.target_power_edit.text())
-            start_time_str = self.start_time_edit.text().strip()
+            start_time_str = self.start_time_edit.time().toString("HH:mm")
         except ValueError:
             QMessageBox.critical(self, "Input Error", "Vui lòng nhập đúng định dạng số/giờ.")
             return
@@ -285,7 +320,7 @@ class PowerChangeWidget(QWidget):
             QMessageBox.critical(self, "Input Error", "Holding Load (MW) phải là số.")
             return
 
-        holding_time = self.holding_time_edit.text().strip()
+        holding_time = self.holding_time_edit.time().toString("HH:mm")
         QMessageBox.information(self, "Holding Information",
                                 f"Holding Load: {holding_load}\nHolding Time: {holding_time}")
 
@@ -303,11 +338,19 @@ class PowerChangeWidget(QWidget):
 
     def on_reset_clicked(self):
         # 1) Xoá inputs
-        self.start_power_edit.clear()
-        self.target_power_edit.clear()
-        self.start_time_edit.clear()
-        self.holding_load_edit.clear()
-        self.holding_time_edit.clear()
+        # self.start_power_edit.clear()
+        # self.target_power_edit.clear()
+        # self.start_time_edit.clear()
+        # self.holding_load_edit.clear()
+        # self.holding_time_edit.clear()
+        # Đặt lại QTimeEdit
+        self.start_time_edit.setTime(QTime.currentTime())
+        self.holding_time_edit.setTime(QTime(0, 0))
+
+        # Bật/tắt lại chế độ live mặc định
+        self._live_start_time = True
+        self._live_hold_time  = False
+
 
         # 2) Reset cờ báo động
         self.alarm_played_for_429 = False
@@ -351,6 +394,13 @@ class PowerChangeWidget(QWidget):
         draw_series(self.ax, series)
         self.figure.autofmt_xdate()
         self.canvas.draw()
+    def _tick_time_edits(self):
+        now = QTime.currentTime()
+        # Cập nhật nếu đang ở chế độ live và không có focus (tránh ghi đè khi người dùng đang gõ)
+        if self._live_start_time and self.start_time_edit is not None and not self.start_time_edit.hasFocus():
+            self.start_time_edit.setTime(now)
+        if self._live_hold_time and self.holding_time_edit is not None and not self.holding_time_edit.hasFocus():
+            self.holding_time_edit.setTime(now)
 
     # ----------------------
     # Alarm checking (no clock UI)
