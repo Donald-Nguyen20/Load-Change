@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from datetime import datetime
 from typing import List, Optional
+from unittest import result
 
 from PySide6.QtCore import Qt, QTimer, QTime
 from PySide6.QtWidgets import (
@@ -18,6 +19,19 @@ from modules.plotting import draw_series
 from modules.alarms import check_and_fire
 from ui.result_panel import ResultPanel
 
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+
+@dataclass
+class Command:
+    start_mw: float
+    target_mw: float
+    start_time: datetime        # thời điểm người dùng nhập (ý định ban đầu)
+    hold_minutes: int           # thời gian hold sau khi đạt target (vd: 10’)
+    # các trường tính sau (điền khi lên timeline)
+    scheduled_start: datetime | None = None
+    hold_start: datetime | None = None
+    hold_end: datetime | None = None
 
 
 class PowerChangeWidget(QWidget):
@@ -77,6 +91,13 @@ class PowerChangeWidget(QWidget):
         self.check_timer = QTimer(self)
         self.check_timer.timeout.connect(self.check_and_alarm)
         self.check_timer.start(1000)
+        # --- Command queue và kế hoạch ---
+        self.command_queue: list[Command] = []
+        self.current_plan_segments: list[dict] = []
+        self.default_hold_minutes = 10  # hoặc lấy từ cấu hình của anh
+
+
+
 
     # ----------------------
     # UI construction
@@ -119,6 +140,7 @@ class PowerChangeWidget(QWidget):
         input_row.addWidget(self.toggle_btn, 0, Qt.AlignLeft)
         input_row.addStretch(1)          # ép trái
         root.addLayout(input_row)
+        self._build_join_inputs(root)
 
         # Khung nhập bổ sung (Hold)
         hold_row = QHBoxLayout()
@@ -226,7 +248,8 @@ class PowerChangeWidget(QWidget):
         try:
             start_power = float(self.start_power_edit.text())
             target_power = float(self.target_power_edit.text())
-            start_time_str = self.start_time_edit.time().toString("HH:mm")
+            t = self.start_time_edit.time()
+            start_dt = datetime.now().replace(hour=t.hour(), minute=t.minute(), second=0, microsecond=0)
         except ValueError:
             QMessageBox.critical(self, "Input Error", "Vui lòng nhập đúng định dạng số/giờ.")
             return
@@ -259,27 +282,27 @@ class PowerChangeWidget(QWidget):
             QMessageBox.critical(self, "Config Error", f"Lỗi cấu hình: {e}")
             return
 
+        # --- TÍNH TOÁN ---
         result = compute_power_change_and_pauses(
             start_power=start_power,
             target_power=target_power,
-            start_time=start_time_str,  # "HH:MM" hoặc datetime
+            start_time=start_dt,  # dùng datetime cùng ngày
             cfg=cfg,
         )
 
         # Gán cho vẽ/logic
         self.times1 = result.times
         self.powers1 = result.powers
-        self.final_load_time = result.final_load_time
-        self.time_reaching_429 = result.time_reaching_429
-        self.post_pause_time = result.post_pause_time
-        self.time_holding_462 = result.time_holding_462
+        self.final_load_time    = result.final_load_time
+        self.time_reaching_429  = result.time_reaching_429
+        self.post_pause_time    = result.post_pause_time
+        self.time_holding_462   = result.time_holding_462
         self.hold_complete_time = result.hold_complete_time
 
         # Cập nhật nhãn
         self.result_panel.set_total_load_time(
             self.final_load_time.strftime("%H:%M") if self.final_load_time else None
         )
-
         if self.time_reaching_429:
             self.result_panel.set_429_time(self.time_reaching_429.strftime("%H:%M"))
             self.result_panel.set_post_pause_time(
@@ -294,24 +317,24 @@ class PowerChangeWidget(QWidget):
             minutes=self.pause_time_hold_min
         )
 
-
-        # Vẽ đồ thị (KHÔNG tạo FigureCanvas mới)
+        # Vẽ đồ thị
         self.update_plot()
 
-        # Ghi log Excel
+        # --- GHI EXCEL ---
         copy_text = (
             f"Decrease Unit load to {target_power} MW/Giảm tải xuống {target_power} MW"
             if start_power > target_power else
             f"Increase Unit load to {target_power} MW/Tăng tải lên {target_power} MW"
         )
         data = {
-            'time_now': datetime.now(),
-            'start_power': start_power,
-            'target_power': target_power,
-            'start_time_str': start_time_str,
-            'copy_text': copy_text,
+            "time_now": datetime.now(),
+            "start_power": start_power,
+            "target_power": target_power,
+            "start_time_str": start_dt.strftime("%H:%M"),  # thay vì biến cũ
+            "copy_text": copy_text,
         }
         self.excel_updater.append_data(data)
+
 
     def on_hold_clicked(self):
         try:
@@ -370,7 +393,13 @@ class PowerChangeWidget(QWidget):
         self.post_pause_time = None
         self.time_holding_462 = None
         self.hold_complete_time = None
-
+        # 4b) Reset NỐI LỆNH (ô nhập + hàng đợi + timeline)
+        if hasattr(self, "target_mw_edit"):
+            self.target_mw_edit.clear()
+        if hasattr(self, "join_time_edit"):
+            self.join_time_edit.setTime(QTime.currentTime())
+        self.command_queue.clear()
+        self.current_plan_segments.clear()
         # 5) Làm mới đồ thị (KHÔNG tạo Figure/Canvas mới)
         self.ax.clear()
         self.ax.set_title('TREND: POWER DEPEND ON TIMES')
@@ -424,3 +453,308 @@ class PowerChangeWidget(QWidget):
         self.alarm_played_for_post_pause = flags["holding_complete"]
         self.alarm_played_for_final_load = flags["final_load"]
         self.alarm_played_for_hold_complete = flags["hold_10_min"]
+
+    #Hàm “Enter để nối lệnh” có kiểm tra nằm trong HOLD lệnh trước
+    def on_add_command_via_enter(self):
+        """Thêm lệnh vào queue + rebuild timeline (mặc định hold @429 khi chưa có lệnh trước)."""
+        try:
+            target_mw = float(self.target_mw_edit.text())
+        except ValueError:
+            QMessageBox.warning(self, "Lỗi", "Target MW (nối lệnh) phải là số.")
+            return
+
+        t = self.join_time_edit.time()
+        user_dt = datetime.now().replace(hour=t.hour(), minute=t.minute(), second=0, microsecond=0)
+
+        # start_mw hiện tại: target của lệnh trước, nếu chưa có thì mặc định 429
+        start_mw_current = (self.command_queue[-1].target_mw if self.command_queue else self.threshold_429)
+
+        new_cmd = Command(
+            start_mw=start_mw_current,
+            target_mw=target_mw,
+            start_time=user_dt,
+            hold_minutes=0,
+        )
+
+        # Lịch: nếu đã có lệnh trước → validate; nếu chưa có → chạy đúng giờ nhập
+        ok, scheduled_dt, msg = self._validate_and_schedule_next_command(new_cmd)
+
+
+        if not ok and msg:
+            QMessageBox.information(
+                self, "Điều chỉnh thời điểm",
+                f"{msg}\n\nHệ thống sẽ tự dời sang: {scheduled_dt.strftime('%H:%M')}"
+            )
+
+        new_cmd.scheduled_start = scheduled_dt
+        self.command_queue.append(new_cmd)
+        self.rebuild_joined_plan()
+
+    # --- DEBUG PRINT thời gian hoàn thành lệnh nối ---
+        def _fmt(dt): return dt.strftime("%H:%M") if dt else "—"
+        pivot = self.threshold_429
+        direction = "TĂNG" if new_cmd.target_mw > pivot else "GIẢM"
+
+        print(
+            f"[JOIN] {direction} {new_cmd.start_mw:.0f}→{new_cmd.target_mw:.0f} MW | "
+            f"Start: {_fmt(new_cmd.scheduled_start)} | "
+            f"Completed (reach target): {_fmt(new_cmd.hold_start)}"
+        )
+        if new_cmd.hold_start:
+            self.result_panel.set_override_complete(new_cmd.hold_start.strftime("%H:%M"))
+        else:
+            self.result_panel.set_override_complete(None)
+    def _validate_and_schedule_next_command(self, new_cmd: Command) -> tuple[bool, datetime, str]:
+        """
+        target > 429 -> TĂNG  ⇒ bắt đầu sau HOLD_END(429)
+        target < 429 -> GIẢM  ⇒ bắt đầu sau HOLD_END(429) + 45'
+        """
+        prev_hold_start, prev_hold_end = self._compute_last_command_hold_window()
+        if prev_hold_start is None or prev_hold_end is None:
+            prev_hold_end = self._compute_last_command_end_time()
+
+        user_dt = new_cmd.start_time
+
+        pivot = self.threshold_429  # 429.0
+        is_increasing = new_cmd.target_mw > pivot
+
+        # ✅ Quy tắc đúng:
+        required_start = prev_hold_end if is_increasing else (prev_hold_end + timedelta(minutes=45))
+
+        in_hold_window = (prev_hold_start is not None and prev_hold_start <= user_dt <= prev_hold_end)
+        if in_hold_window:
+            scheduled_start = required_start
+            return True, scheduled_start, ""
+        else:
+            scheduled_start = required_start
+            action = "Tăng (sau HOLD_END)" if is_increasing else "Giảm (sau HOLD_END + 45')"
+            msg = (
+                "Thời điểm anh nhập KHÔNG nằm trong giai đoạn HOLD của lệnh trước.\n"
+                "Để đảm bảo hold đủ thời gian, lệnh kế sẽ được tự động dời theo quy định:\n"
+                f"- {action} theo mốc 429 MW.\n"
+                f"Giờ người nhập: {user_dt.strftime('%H:%M')}\n"
+                f"Giờ yêu cầu:    {scheduled_start.strftime('%H:%M')}"
+            )
+            return False, scheduled_start, msg
+
+
+
+    def _build_segments_for_one_command(self, start_mw: float, target_mw: float,
+                                    start_dt: datetime, hold_minutes: int):
+        """
+        Kết quả: (segments, hold_start, hold_end)
+        segments: list[{"t": datetime, "mw": float, "tag": str}]
+        """
+        # Lấy cấu hình hiện tại từ UI/state
+        pulverizer_mode = self.pulverizer_combo.currentText() if hasattr(self, "pulverizer_combo") else "3 Puls"
+        cfg = CalcConfig(
+            threshold_429=self.threshold_429,
+            hold_power=self.holding_complete_mw,
+            pause_time_429_min=self.pause_time_429_min,
+            # dùng hold theo lệnh này để vẽ đoạn hold sau ramp
+            pause_time_hold_min=hold_minutes,
+            pulverizer_mode=pulverizer_mode,
+        )
+
+        # GỌI HÀM TRẢ VỀ OBJECT, KHÔNG UNPACK
+        result = compute_power_change_and_pauses(
+            start_power=start_mw,
+            target_power=target_mw,
+            start_time=start_dt,   # datetime ok (hàm của anh đã hỗ trợ)
+            cfg=cfg,               # tham số tên 'cfg' đúng như on_enter_clicked
+        )
+
+        times = result.times
+        mw_values = result.powers
+
+        segs = []
+        if times and mw_values:
+            segs = [{"t": t, "mw": mw, "tag": "ramp"} for t, mw in zip(times, mw_values)]
+
+        ramp_end  = times[-1] if times else None
+        hold_start = ramp_end           # dùng như “thời điểm hoàn tất lệnh nối”
+        hold_end   = None               # không có HoldEnd khi hold_minutes == 0
+
+        if ramp_end is not None and hold_minutes > 0:
+            hold_end = ramp_end + timedelta(minutes=hold_minutes)
+            segs.append({"t": hold_start, "mw": target_mw, "tag": "hold_start"})
+            segs.append({"t": hold_end,  "mw": target_mw, "tag": "hold_end"})
+
+        return segs, hold_start, hold_end
+
+
+
+
+    def rebuild_joined_plan(self):
+        if not self.command_queue:
+            self.current_plan_segments = []
+            return
+
+        plan_segments = []
+        for idx, cmd in enumerate(self.command_queue):
+            if idx == 0:
+                scheduled = cmd.scheduled_start or cmd.start_time
+            else:
+                # đã tính ở _validate_and_schedule_next_command
+                scheduled = cmd.scheduled_start
+
+            segs, h_start, h_end = self._build_segments_for_one_command(
+                start_mw=cmd.start_mw,
+                target_mw=cmd.target_mw,
+                start_dt=scheduled,
+                hold_minutes=cmd.hold_minutes
+            )
+
+            # cập nhật lại vào command để truy vấn sau
+            cmd.hold_start = h_start
+            cmd.hold_end = h_end
+
+            plan_segments.extend(segs)
+
+        self.current_plan_segments = plan_segments
+        self.render_plan()
+        self.persist_plan_to_excel()
+    
+    def render_plan(self):
+        """Vẽ timeline của queue nối lệnh từ self.current_plan_segments."""
+        if not self.current_plan_segments:
+            # Không có gì để vẽ, xóa trục cho sạch
+            self.ax.clear()
+            self.ax.set_title('TREND: POWER DEPEND ON TIMES (Joined Plan)')
+            self.ax.set_xlabel('TIMES')
+            self.ax.set_ylabel('POWER (MW)')
+            self.canvas.draw_idle()
+            return
+
+        xs = [seg["t"] for seg in self.current_plan_segments]
+        ys = [seg["mw"] for seg in self.current_plan_segments]
+
+        self.ax.clear()
+        self.ax.set_title('TREND: POWER DEPEND ON TIMES (Joined Plan)')
+        self.ax.set_xlabel('TIMES')
+        self.ax.set_ylabel('POWER (MW)')
+
+        # dùng draw_series như các chỗ khác cho thống nhất
+        draw_series(self.ax, [{"x": xs, "y": ys, "label": "Joined Plan"}])
+        self.figure.autofmt_xdate()
+        self.canvas.draw_idle()
+
+
+    def persist_plan_to_excel(self):
+        """
+        Ghi timeline tối giản vào Excel.
+        Yêu cầu ExcelUpdater có append_rows(list[dict]) hoặc append_data(dict) (fallback).
+        """
+        if not self.current_plan_segments:
+            return
+
+        rows = []
+        for seg in self.current_plan_segments:
+            rows.append({
+                "Time": seg["t"].strftime("%Y-%m-%d %H:%M:%S"),
+                "MW": seg["mw"],
+                "Tag": seg.get("tag", ""),
+            })
+
+        if hasattr(self.excel_updater, "append_rows"):
+            self.excel_updater.append_rows(rows)
+        else:
+            # fallback nếu class cũ chỉ có append_data
+            for r in rows:
+                self.excel_updater.append_data(r)
+
+    
+    def _compute_last_command_hold_window(self) -> tuple[datetime | None, datetime | None]:
+        # Nếu đã có lệnh nối → giữ nguyên như anh đang làm (quét từ command_queue / segments)
+        if self.command_queue:
+            last = self.command_queue[-1]
+            h_start, h_end = last.hold_start, last.hold_end
+            if h_start is not None and h_end is not None:
+                return h_start, h_end
+            if self.current_plan_segments:
+                hold_end = None
+                hold_start = None
+                for seg in reversed(self.current_plan_segments):
+                    tag = seg.get("tag")
+                    if hold_end is None and tag == "hold_end":
+                        hold_end = seg["t"]
+                    elif tag == "hold_start":
+                        hold_start = seg["t"]
+                        if hold_end is not None:
+                            break
+                if hold_start is not None and hold_end is not None:
+                    last.hold_start, last.hold_end = hold_start, hold_end
+                    return hold_start, hold_end
+            return None, None
+
+        # ⬇️ Fallback khi CHƯA có lệnh nối: dùng cửa sổ HOLD ở 429 (không dùng 462)
+        hold_start_429 = self.time_reaching_429
+        hold_end_429   = self.post_pause_time  # kết thúc pause ở 429 ⇒ tiếp tục ramp
+        return hold_start_429, hold_end_429
+
+
+
+    def _compute_last_command_end_time(self) -> datetime:
+        if not self.command_queue:
+            # end = HOLD_END của 429; nếu thiếu, suy từ 429 + pause_429
+            if self.post_pause_time:
+                return self.post_pause_time
+            if self.time_reaching_429 is not None:
+                return self.time_reaching_429 + timedelta(minutes=self.pause_time_429_min or 0)
+            return datetime.now()
+
+        last = self.command_queue[-1]
+        if last.hold_end is not None:
+            return last.hold_end
+
+        if self.current_plan_segments:
+            for seg in reversed(self.current_plan_segments):
+                if seg.get("tag") == "hold_end":
+                    return seg["t"]
+            return self.current_plan_segments[-1]["t"]
+
+        return last.scheduled_start or last.start_time
+
+    def _build_join_inputs(self, parent_layout: QVBoxLayout):
+        """Cụm ô nhập NỐI LỆNH (không còn Start MW)."""
+        join_row = QHBoxLayout()
+
+        title = QLabel("NỐI LỆNH:")
+        title.setStyleSheet("font-weight: 600;")
+        join_row.addWidget(title)
+
+        # ⬇️ CHỈ GIỮ target_mw + time
+        self.target_mw_edit = QLineEdit(self)
+        self.target_mw_edit.setPlaceholderText("Target MW (nối lệnh)")
+        self.target_mw_edit.setFixedWidth(110)
+        join_row.addWidget(QLabel("Kết thúc:"))
+        join_row.addWidget(self.target_mw_edit)
+
+        self.join_time_edit = QTimeEdit(self)
+        self.join_time_edit.setDisplayFormat("HH:mm")
+        self.join_time_edit.setTime(QTime.currentTime())
+        self.join_time_edit.setFixedWidth(90)
+        join_row.addWidget(QLabel("Thời gian:"))
+        join_row.addWidget(self.join_time_edit)
+
+        self.add_cmd_btn = QPushButton("Thêm lệnh (Enter)", self)
+        join_row.addWidget(self.add_cmd_btn)
+
+        join_row.addStretch(1)
+        parent_layout.addLayout(join_row)
+
+        # Gỡ kết nối cũ nếu có
+        try: self.add_cmd_btn.clicked.disconnect()
+        except Exception: pass
+        try: self.target_mw_edit.returnPressed.disconnect()
+        except Exception: pass
+        try: self.join_time_edit.editingFinished.disconnect()
+        except Exception: pass
+
+        # Kết nối mới
+        self.target_mw_edit.returnPressed.connect(self.on_add_command_via_enter)
+        # self.join_time_edit.editingFinished.connect(self.on_add_command_via_enter)
+        self.add_cmd_btn.clicked.connect(self.on_add_command_via_enter)
+
+
+

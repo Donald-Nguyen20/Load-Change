@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import os
+import zipfile
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
 from openpyxl.utils.exceptions import InvalidFileException
@@ -14,10 +15,13 @@ class ExcelUpdater:
         if os.path.exists(self.file_name):
             try:
                 self.wb = load_workbook(filename=self.file_name)
-            except InvalidFileException:
+            except (InvalidFileException, zipfile.BadZipFile):
+                # ❗ file hỏng, tạo mới
                 self.wb = Workbook()
         else:
+            # ❗ chưa có, tạo mới
             self.wb = Workbook()
+
         self.sheet = self.wb.active
 
     def append_data(self, data: dict):

@@ -20,14 +20,15 @@ class ResultPanel(QFrame):
         self.hold_complete_label = QLabel("Holding 462MW compl:")
         self.time_reaching_429_label = QLabel("429 MW: ")
         self.post_pause_time_label = QLabel("Holding 429MW compl: ")
-
+        # ⬇️ NEW: thời gian hoàn thành lệnh nối
+        self.override_complete_label = QLabel("Override load: ")
 
         for w in [
             self.total_load_time_label,
             self.hold_complete_label,
             self.time_reaching_429_label,
             self.post_pause_time_label,
-            
+            self.override_complete_label,   # ⬅️ add vào layout
         ]:
             w.setProperty("role", "result")
             self.layout.addWidget(w, 0, Qt.AlignLeft)
@@ -51,14 +52,14 @@ class ResultPanel(QFrame):
             }
         """)
 
-
     # ---------- Public API ----------
     def reset(self):
         self.total_load_time_label.setText("Load reaching: ")
         self.hold_complete_label.setText("Holding 462MW comp:")
         self.time_reaching_429_label.setText("429 MW: ")
         self.post_pause_time_label.setText("Holding 429MW comp: ")
-        
+        # ⬇️ NEW: reset dòng “Override load”
+        self.override_complete_label.setText("Override load: ")
 
     def set_total_load_time(self, t: Optional[str]):
         self.total_load_time_label.setText(
@@ -95,3 +96,9 @@ class ResultPanel(QFrame):
                 '<span style="color:#b0bec5;">Holding 10M:</span>'
             )
 
+    # ⬇️ NEW: API hiển thị thời điểm hoàn thành lệnh nối (reach target của lệnh nối)
+    def set_override_complete(self, t: Optional[str]):
+        self.override_complete_label.setText(
+            f'<span style="color:#b0bec5;">Override load:</span> '
+            f'<span style="color:#00e676;font-weight:700;">{t or ""}</span>'
+        )
