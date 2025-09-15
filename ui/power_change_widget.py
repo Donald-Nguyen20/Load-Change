@@ -85,8 +85,8 @@ class PowerChangeWidget(QWidget):
         self._build_ui()
         # --- live time for QTimeEdit ---
         self._live_start_time = True    # Start Time auto-run ban đầu
-        self._live_hold_time  = False   # Holding Time mặc định nhập tay
-
+        self._live_hold_time  = True    # True để chạy lifetime
+        self._live_join_time  = True
         self._time_timer = QTimer(self)
         self._time_timer.timeout.connect(self._tick_time_edits)
         self._time_timer.start(1000)    # tick mỗi giây
@@ -151,7 +151,7 @@ class PowerChangeWidget(QWidget):
         # Khung nhập bổ sung (Hold)
         hold_row = QHBoxLayout()
         self.holding_load_edit = self._labeled_edit(hold_row, "Holding Load (MW):")
-        self.holding_time_edit = self._labeled_timeedit(hold_row, "Holding Time (HH:MM):", width=90, default_now=False)
+        self.holding_time_edit = self._labeled_timeedit(hold_row, "Holding Time (HH:MM):", width=90, default_now=True)
         self.hold_btn = QPushButton("Hold")
         self.hold_btn.clicked.connect(self.on_hold_clicked)   # (SỬA) nút Hold được connect
         hold_row.addWidget(self.hold_btn, 0, Qt.AlignLeft)
@@ -377,11 +377,13 @@ class PowerChangeWidget(QWidget):
         # self.holding_time_edit.clear()
         # Đặt lại QTimeEdit
         self.start_time_edit.setTime(QTime.currentTime())
-        self.holding_time_edit.setTime(QTime(0, 0))
+        self.holding_time_edit.setTime(QTime.currentTime()) 
 
         # Bật/tắt lại chế độ live mặc định
         self._live_start_time = True
-        self._live_hold_time  = False
+        self._live_hold_time  = True
+        self._live_join_time  = True
+
 
 
         # 2) Reset cờ báo động
@@ -486,6 +488,9 @@ class PowerChangeWidget(QWidget):
             self.start_time_edit.setTime(now)
         if self._live_hold_time and self.holding_time_edit is not None and not self.holding_time_edit.hasFocus():
             self.holding_time_edit.setTime(now)
+        if getattr(self, "_live_join_time", False) and getattr(self, "join_time_edit", None) is not None \
+                and not self.join_time_edit.hasFocus():
+            self.join_time_edit.setTime(now)
 
     # ----------------------
     # Alarm checking (no clock UI)
@@ -805,6 +810,9 @@ class PowerChangeWidget(QWidget):
         self.join_time_edit.setDisplayFormat("HH:mm")
         self.join_time_edit.setTime(QTime.currentTime())
         self.join_time_edit.setFixedWidth(90)
+        def _stop_live_join():
+            self._live_join_time = False
+        self.join_time_edit.editingFinished.connect(_stop_live_join)
         join_row.addWidget(QLabel("Thời gian:"))
         join_row.addWidget(self.join_time_edit)
 

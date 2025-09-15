@@ -81,19 +81,19 @@ class ResultPanel(QFrame):
 
     def set_post_pause_time(self, t: Optional[str]):
         self.post_pause_time_label.setText(
-            f'<span style="color:#b0bec5;">The holding complete:</span> '
+            f'<span style="color:#b0bec5;">Holding 429MW:</span> '
             f'<span style="color:#00e676;font-weight:700;">{t or ""}</span>'
         )
 
     def set_hold_complete(self, t: Optional[str], minutes: int = 10):
         if t:
             self.hold_complete_label.setText(
-                f'<span style="color:#b0bec5;">Holding 10M completed:</span> '
+                f'<span style="color:#b0bec5;">Holding 462MW compl:</span> '
                 f'<span style="color:#00e676;font-weight:700;">{t}</span>'
             )
         else:
             self.hold_complete_label.setText(
-                '<span style="color:#b0bec5;">Holding 10M:</span>'
+                '<span style="color:#b0bec5;">Holding 462MW:</span>'
             )
 
     # ⬇️ NEW: API hiển thị thời điểm hoàn thành lệnh nối (reach target của lệnh nối)

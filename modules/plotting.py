@@ -60,54 +60,48 @@ def _prepare_joined_from(joined_segments, start_time, start_mw):
 
 
 def draw_main_and_joined(
-    ax,
-    *,
+    ax, *,
     main_xy=None,
     joined_segments=None,
     hold_windows=None,
     override_point=None,
-    # ⬇️ 2 mốc neo
-    trim_time=None,    # nơi cắt main (HOLD_END)
-    trim_mw=None,
-    start_time=None,   # nơi bắt đầu joined (HOLD_END hoặc +45')
-    start_mw=None,
-    join_color="tab:orange",
+    trim_time=None, trim_mw=None,
+    start_time=None, start_mw=None,
     main_color="tab:green",
+    joined_color="tab:orange",   # tách riêng với bridge
+    bridge_color="tab:orange",
+    hold_color="#5dade2"
 ):
     ax.clear()
 
-    # 1) tô vùng HOLD
     if hold_windows:
         for t0, t1, _label in hold_windows:
             if t0 and t1 and t1 > t0:
-                ax.axvspan(t0, t1, alpha=0.15, color="#5dade2")
+                ax.axvspan(t0, t1, alpha=0.15, color=hold_color)
 
-    # 2) cắt main ở HOLD_END
     if main_xy and trim_time and trim_mw is not None:
         main_xy = _trim_main_until(main_xy, trim_time, trim_mw)
 
-    # 3) chuẩn bị joined bắt đầu từ start_time
     joined_xy = None
     if joined_segments and start_time and start_mw is not None:
         joined_xy = _prepare_joined_from(joined_segments, start_time, start_mw)
-    # 3.5) vẽ "cầu nối" nếu có khoảng trống giữa HOLD_END và mốc bắt đầu nối
+
     if (trim_time is not None and start_time is not None and start_time > trim_time
             and trim_mw is not None and start_mw is not None):
-        # luôn vẽ ngang tại 429 MW (hoặc mức neo start_mw)
-        y = start_mw  # start_mw == 429 theo thiết kế neo
-        ax.plot(
-            [trim_time, start_time], [y, y],
-            linestyle="-", color=join_color, marker=None, label="_nolegend_"
-        )
+        y = start_mw
+        ax.plot([trim_time, start_time], [y, y],
+                linestyle="-", color=bridge_color, label="_nolegend_", zorder=1)
 
-    # 4) vẽ
     plotted = False
     if main_xy and main_xy["x"]:
-        ax.plot(main_xy["x"], main_xy["y"], marker="o", linestyle="-", label=main_xy.get("label", "Plan"))
+        ax.plot(main_xy["x"], main_xy["y"],
+                marker="o", linestyle="-", color=main_color, label=main_xy.get("label", "Plan (Main)"), zorder=3)
         plotted = True
     if joined_xy and joined_xy["x"]:
-        ax.plot(joined_xy["x"], joined_xy["y"], marker="o", linestyle="-", label="Plan")
+        ax.plot(joined_xy["x"], joined_xy["y"],
+                marker="o", linestyle="-", color=joined_color, label="Plan (Joined)", zorder=2)
         plotted = True
+
 
     # 5) marker override
     if override_point:
