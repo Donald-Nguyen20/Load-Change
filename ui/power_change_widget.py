@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 from datetime import datetime
 from typing import List, Optional
-from unittest import result
 
 from PySide6.QtCore import Qt, QTimer, QTime
 from PySide6.QtWidgets import (
@@ -21,6 +20,7 @@ from ui.result_panel import ResultPanel
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from modules.plotting import draw_main_and_joined 
+from modules.df_plot import build_plot_df, densify_uniform
 
 @dataclass
 class Command:
@@ -70,8 +70,8 @@ class PowerChangeWidget(QWidget):
         # data series for plotting
         self.times1: List[datetime] = []
         self.powers1: List[float] = []
-        self.times2: List[datetime] = []   # reserved (hidden layout 2)
-        self.powers2: List[float] = []
+        # self.times2: List[datetime] = []   # reserved (hidden layout 2)
+        # self.powers2: List[float] = []
 
         # result times
         self.final_load_time: Optional[datetime] = None
@@ -403,7 +403,7 @@ class PowerChangeWidget(QWidget):
 
         # 4) Xoá series + kết quả thời gian
         self.times1.clear(); self.powers1.clear()
-        self.times2.clear(); self.powers2.clear()
+        # self.times2.clear(); self.powers2.clear()
         self.final_load_time = None
         self.time_reaching_429 = None
         self.post_pause_time = None
@@ -468,6 +468,67 @@ class PowerChangeWidget(QWidget):
             start_time = self.current_plan_segments[0]["t"]
             start_mw   = self.threshold_429
 
+        # --- Build DataFrame “hậu cắt-ghép” song song với quá trình vẽ ---
+
+        # 1) joined_segments -> joined_xy (nếu có)
+        joined_xy = None
+        if joined_segments:
+            jx = [seg["t"] for seg in joined_segments]
+            jy = [seg["mw"] for seg in joined_segments]
+            joined_xy = {"x": jx, "y": jy}
+
+        # 2) hold_windows trong update_plot đang là (start, end, label)
+        #    chuyển về dạng (start, end) cho build_plot_df
+        _hold_windows_df = []
+        for hw in (hold_windows or []):
+            if len(hw) >= 2:
+                _hold_windows_df.append((hw[0], hw[1]))
+
+        # 3) Sự kiện để gắn nhãn vào DF (dùng thuộc tính của self trong widget này)
+        events = {
+            "t_429":           getattr(self, "time_reaching_429", None),
+            "post_pause":      getattr(self, "post_pause_time", None),
+            "hold_start_462":  getattr(self, "time_holding_462", None),
+            "hold_end_462":    getattr(self, "hold_complete_time", None),
+            "override_done":   getattr(self, "override_complete_time", None),
+        }
+        # (nếu anh có “finish_time” dưới tên khác, bổ sung vào đây)
+
+        # 4) main_xy đã có ở đầu hàm (self.times1/self.powers1)
+        #    trim_time/trim_mw/start_time/start_mw đã được tính phía trên
+        try:
+            df = build_plot_df(
+                main_xy=main_xy or {"x": [], "y": []},
+                joined_xy=joined_xy,
+                trim_time=trim_time,
+                trim_mw=trim_mw,
+                hold_windows=_hold_windows_df,   # (start, end) để set is_hold
+                events=events,
+            )
+
+            # 🔹 DENSIFY: chèn điểm phẳng theo phút trong các hold windows có gắn label
+            df = densify_uniform(
+                df,
+                step_minutes=1,                       # đổi 1/5/10 tùy nhu cầu
+                hold_windows_labeled=hold_windows,    # [(start, end, "Hold @429"), ...]
+                plateau_429=self.threshold_429,
+                plateau_462=self.holding_complete_mw,
+            )
+            self._last_plot_df = df
+
+            # Lưu lại để overlay/ghi file
+            self._last_plot_df = df
+
+            # In vài dòng đầu (printf style)
+            print("\n=== PLOT_DF (first 40 rows) ===")
+            print(df.head(40).to_string(index=False))
+
+            # Nếu muốn: df.to_excel("plot_df_last.xlsx", index=False)
+
+        except Exception as e:
+            print("[WARN] build_plot_df/densify failed:", e)
+
+
         draw_main_and_joined(
             self.ax,
             main_xy=main_xy,
@@ -477,6 +538,47 @@ class PowerChangeWidget(QWidget):
             trim_time=trim_time, trim_mw=trim_mw,
             start_time=start_time, start_mw=start_mw,
         )
+        # --- OVERLAY: vẽ lại từ DataFrame để đối chiếu chính xác ---
+        try:
+            if hasattr(self, "_last_plot_df"):
+                df = self._last_plot_df
+                if (df is not None) and (not df.empty):
+                    dfo = df.sort_values(["seg_id", "t"], kind="stable")
+
+                    # main
+                    main_df = dfo[dfo["source"] == "main"]
+                    if not main_df.empty:
+                        self.ax.plot(
+                            main_df["t"], main_df["mw"],
+                            linestyle="--", linewidth=1.2, alpha=0.9,
+                            label="DF main (check)", zorder=5
+                        )
+
+                    # joined
+                    joined_df = dfo[dfo["source"] == "joined"]
+                    if not joined_df.empty:
+                        self.ax.plot(
+                            joined_df["t"], joined_df["mw"],
+                            linestyle="--", linewidth=1.2, alpha=0.9,
+                            label="DF joined (check)", zorder=5
+                        )
+
+                    # marker các điểm có evt (tùy chọn)
+                    evt_df = dfo[dfo["evt"].notna()]
+                    if not evt_df.empty:
+                        self.ax.scatter(
+                            evt_df["t"], evt_df["mw"],
+                            s=18, alpha=0.9, label="DF events", zorder=6
+                        )
+
+                    # cập nhật legend sau khi thêm overlay
+                    self.ax.legend()
+        except Exception as e:
+            print("[WARN] DF overlay plot failed:", e)
+
+        # Định dạng & render
+        # self.figure.autofmt_xdate()
+        # self.canvas.draw()
         self.figure.autofmt_xdate()
         self.canvas.draw()
 
@@ -711,7 +813,17 @@ class PowerChangeWidget(QWidget):
         self.ax.set_ylabel('POWER (MW)')
 
         # dùng draw_series như các chỗ khác cho thống nhất
-        draw_series(self.ax, [{"x": xs, "y": ys, "label": "Joined Plan"}])
+        # draw_main_and_joined(
+        #     self.ax,
+        #     main_xy=None,
+        #     joined_segments=self.current_plan_segments,  # [{"t": dt, "mw": val}, ...]
+        #     hold_windows=None,
+        #     override_point=None,
+        #     trim_time=None, trim_mw=None,
+        #     start_time=xs[0] if xs else None,
+        #     start_mw=ys[0] if ys else None,
+        # )
+
         self.figure.autofmt_xdate()
         self.canvas.draw_idle()
 
@@ -795,15 +907,15 @@ class PowerChangeWidget(QWidget):
         """Cụm ô nhập NỐI LỆNH (không còn Start MW)."""
         join_row = QHBoxLayout()
 
-        title = QLabel("NỐI LỆNH:")
-        title.setStyleSheet("font-weight: 600;")
-        join_row.addWidget(title)
+        # title = QLabel("NỐI LỆNH:")
+        # title.setStyleSheet("font-weight: 600;")
+        # join_row.addWidget(title)
 
         # ⬇️ CHỈ GIỮ target_mw + time
         self.target_mw_edit = QLineEdit(self)
         self.target_mw_edit.setPlaceholderText("Target MW (nối lệnh)")
         self.target_mw_edit.setFixedWidth(110)
-        join_row.addWidget(QLabel("Kết thúc:"))
+        join_row.addWidget(QLabel("Override Target:"))
         join_row.addWidget(self.target_mw_edit)
 
         self.join_time_edit = QTimeEdit(self)
@@ -813,10 +925,10 @@ class PowerChangeWidget(QWidget):
         def _stop_live_join():
             self._live_join_time = False
         self.join_time_edit.editingFinished.connect(_stop_live_join)
-        join_row.addWidget(QLabel("Thời gian:"))
+        join_row.addWidget(QLabel("Timeline:"))
         join_row.addWidget(self.join_time_edit)
 
-        self.add_cmd_btn = QPushButton("Thêm lệnh (Enter)", self)
+        self.add_cmd_btn = QPushButton("Enter", self)
         join_row.addWidget(self.add_cmd_btn)
 
         join_row.addStretch(1)
