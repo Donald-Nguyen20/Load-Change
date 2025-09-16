@@ -21,6 +21,12 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from modules.plotting import draw_main_and_joined 
 from modules.df_plot import build_plot_df, densify_uniform
+from modules.df_plot import build_plot_df, densify_uniform
+from modules.energy import energy_summary_mwh
+from modules.export_utils import export_df_with_minutes
+import os  # nếu anh dùng đường dẫn ghi file
+
+
 
 @dataclass
 class Command:
@@ -502,31 +508,50 @@ class PowerChangeWidget(QWidget):
                 joined_xy=joined_xy,
                 trim_time=trim_time,
                 trim_mw=trim_mw,
-                hold_windows=_hold_windows_df,   # (start, end) để set is_hold
+                hold_windows=_hold_windows_df,   # (start,end) để is_hold
                 events=events,
             )
-
-            # 🔹 DENSIFY: chèn điểm phẳng theo phút trong các hold windows có gắn label
+            # Nội suy đều cả main + joined; ép phẳng vùng hold
             df = densify_uniform(
                 df,
-                step_minutes=1,                       # đổi 1/5/10 tùy nhu cầu
+                step_minutes=1,                       # đổi 1/5/10 nếu muốn
                 hold_windows_labeled=hold_windows,    # [(start, end, "Hold @429"), ...]
                 plateau_429=self.threshold_429,
                 plateau_462=self.holding_complete_mw,
             )
-            self._last_plot_df = df
 
-            # Lưu lại để overlay/ghi file
             self._last_plot_df = df
+        #     try:
+        #         # Ghi ngay cạnh file chạy, tên cố định:
+        #         export_df_with_minutes(df, "last_plot_df.xlsx")
+        #         # hoặc, nếu muốn theo timestamp:
+        #         # from datetime import datetime
+        #         # fname = f"plot_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
+        #         # export_df_with_minutes(df, os.path.join(os.getcwd(), fname))
+        #     except Exception as ex:
+        #         print("[WARN] export_df_with_minutes failed:", ex)
+        #     # ⬆️⬆️ HẾT PHẦN THÊM ⬆️⬆️
 
-            # In vài dòng đầu (printf style)
+        #     print("\n=== PLOT_DF (first 40 rows) ===")
+        #     print(df.head(40).to_string(index=False))
+
+        # except Exception as e:
+        #     print("[WARN] build_plot_df/densify failed:", e)
+            # --- TÍNH MWh & HIỂN THỊ ---
+            summary = energy_summary_mwh(df)   # {'origin_mwh', 'override_mwh', 'total_mwh', 'hold_mwh', 'ramp_mwh'}
+            self.result_panel.set_origin_capacity(
+                f"{summary['origin_mwh']:.2f} MWh" if summary['origin_mwh'] > 0 else ""
+            )
+            self.result_panel.set_override_capacity(
+                f"{summary['override_mwh']:.2f} MWh" if summary['override_mwh'] > 0 else ""
+            )
+
             print("\n=== PLOT_DF (first 40 rows) ===")
             print(df.head(40).to_string(index=False))
 
-            # Nếu muốn: df.to_excel("plot_df_last.xlsx", index=False)
-
         except Exception as e:
-            print("[WARN] build_plot_df/densify failed:", e)
+            print("[WARN] build_plot_df/densify/energy failed:", e)
+
 
 
         draw_main_and_joined(

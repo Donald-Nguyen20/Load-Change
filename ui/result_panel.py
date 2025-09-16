@@ -22,13 +22,16 @@ class ResultPanel(QFrame):
         self.post_pause_time_label = QLabel("Holding 429MW compl: ")
         # ⬇️ NEW: thời gian hoàn thành lệnh nối
         self.override_complete_label = QLabel("Override load: ")
-
+        self.origin_capacity_label = QLabel("Origin Capacity:")
+        self.override_capacity_label = QLabel("Override Capacity:")
         for w in [
             self.total_load_time_label,
             self.hold_complete_label,
             self.time_reaching_429_label,
             self.post_pause_time_label,
             self.override_complete_label,   # ⬅️ add vào layout
+            self.origin_capacity_label,
+            self.override_capacity_label,
         ]:
             w.setProperty("role", "result")
             self.layout.addWidget(w, 0, Qt.AlignLeft)
@@ -60,6 +63,8 @@ class ResultPanel(QFrame):
         self.post_pause_time_label.setText("Holding 429MW comp: ")
         # ⬇️ NEW: reset dòng “Override load”
         self.override_complete_label.setText("Override load: ")
+        self.origin_capacity_label.setText("Origin Capacity:")
+        self.override_capacity_label.setText("Override Capacity:")
 
     def set_total_load_time(self, t: Optional[str]):
         self.total_load_time_label.setText(
@@ -101,4 +106,15 @@ class ResultPanel(QFrame):
         self.override_complete_label.setText(
             f'<span style="color:#b0bec5;">Override load:</span> '
             f'<span style="color:#00e676;font-weight:700;">{t or ""}</span>'
+        )
+    def set_origin_capacity(self, mwh_text: Optional[str]):
+        self.origin_capacity_label.setText(
+            f'<span style="color:#b0bec5;">Origin Capacity:</span> '
+            f'<span style="color:#00e676;font-weight:700;">{mwh_text or ""}</span>'
+        )
+
+    def set_override_capacity(self, mwh_text: Optional[str]):
+        self.override_capacity_label.setText(
+            f'<span style="color:#b0bec5;">Override Capacity:</span> '
+            f'<span style="color:#00e676;font-weight:700;">{mwh_text or ""}</span>'
         )
