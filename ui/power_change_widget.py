@@ -25,6 +25,7 @@ from modules.df_plot import build_plot_df, densify_uniform
 from modules.energy import energy_summary_mwh
 from modules.export_utils import export_df_with_minutes
 import os  # nếu anh dùng đường dẫn ghi file
+from modules.Hold_module import get_mw_at, trim_xy_until
 
 
 
@@ -86,7 +87,19 @@ class PowerChangeWidget(QWidget):
         self.time_holding_462: Optional[datetime] = None
         self.hold_complete_time: Optional[datetime] = None
         self.override_complete_time: Optional[datetime] = None
+                # --- HARD HOLD state ---
+        self.hard_hold_active: bool = False
+        self.hard_hold_dt: datetime | None = None
+        self.hard_hold_mw: float | None = None
 
+        # Điểm neo cho lệnh thêm tiếp theo
+        self.next_cmd_anchor_time: datetime | None = None
+        self.next_cmd_anchor_mw: float | None = None
+
+        # ---------------- UI: nút Hold ----------------
+        self.btn_hold_now = QPushButton("Hold Now")
+        self.btn_hold_now.setToolTip("Dừng tại thời điểm bấm; MW hiện tại sẽ là điểm bắt đầu cho lệnh kế tiếp")
+        self.btn_hold_now.clicked.connect(self.on_hold_now_clicked)
         # --- UI ---
         self._build_ui()
         # --- live time for QTimeEdit ---
@@ -209,6 +222,8 @@ class PowerChangeWidget(QWidget):
         # Ẩn ngay từ đầu
         self.hidden_frame.setVisible(False)
         root.addWidget(self.hidden_frame)
+
+
 
     def _labeled_edit(self, parent_layout_or_widget, label: str, default: str = "", width: int = 100) -> QLineEdit:
         if isinstance(parent_layout_or_widget, QVBoxLayout):
@@ -471,8 +486,17 @@ class PowerChangeWidget(QWidget):
 
         # Phần nối vẫn bắt đầu từ mốc đầu tiên của plan nối (HOLD_END hoặc +45' tùy tăng/giảm)
         if self._cut_after_join and self.current_plan_segments:
+            # ✅ mốc bắt đầu thật của plan nối (sau flat hay không đều đúng)
             start_time = self.current_plan_segments[0]["t"]
-            start_mw   = self.threshold_429
+            start_mw   = self.current_plan_segments[0]["mw"]
+
+            # ✅ cắt main tại đúng mốc bắt đầu này
+            trim_time = start_time
+            if self.times1 and self.powers1:
+                main_xy_for_trim = {"x": self.times1, "y": self.powers1}
+                trim_mw = get_mw_at(main_xy_for_trim, trim_time)   # ← MW thật tại điểm cắt
+            else:
+                trim_mw = start_mw  # fallback an toàn
 
         # --- Build DataFrame “hậu cắt-ghép” song song với quá trình vẽ ---
 
@@ -563,6 +587,17 @@ class PowerChangeWidget(QWidget):
             trim_time=trim_time, trim_mw=trim_mw,
             start_time=start_time, start_mw=start_mw,
         )
+        # >>> STEP5: DRAW HARD HOLD MARKER (BEGIN)
+        if self.hard_hold_active and self.hard_hold_dt is not None:
+            try:
+                self.ax.axvline(self.hard_hold_dt, linestyle="--", linewidth=1.5)  # không set màu để giữ style mặc định
+                # Nhãn nho nhỏ trên đỉnh trục Y để dễ nhìn
+                y_top = self.ax.get_ylim()[1]
+                self.ax.text(self.hard_hold_dt, y_top, "HOLD", va="top", ha="right", fontsize=9)
+            except Exception as _e:
+                print("[WARN] draw hard_hold marker failed:", _e)
+        # >>> STEP5: DRAW HARD HOLD MARKER (END)
+
         # --- OVERLAY: vẽ lại từ DataFrame để đối chiếu chính xác ---
         try:
             if hasattr(self, "_last_plot_df"):
@@ -660,8 +695,16 @@ class PowerChangeWidget(QWidget):
         t = self.join_time_edit.time()
         user_dt = datetime.now().replace(hour=t.hour(), minute=t.minute(), second=0, microsecond=0)
 
+        # >>> STEP4: FORCE START FROM HARD HOLD ANCHOR (BEGIN)
+        if self.next_cmd_anchor_time is not None and self.next_cmd_anchor_mw is not None:
+            # Ép lệnh mới bắt đầu tại thời điểm & MW đã bấm Hold
+            user_dt = self.next_cmd_anchor_time
+            start_mw_current = self.next_cmd_anchor_mw
+        else:
+            # Logic cũ (nếu không có neo từ Hold)
+            start_mw_current = self.threshold_429
+        # >>> STEP4: FORCE START FROM HARD HOLD ANCHOR (END)
 
-        start_mw_current = self.threshold_429
 
         new_cmd = Command(
             start_mw=start_mw_current,
@@ -681,6 +724,19 @@ class PowerChangeWidget(QWidget):
             )
 
         new_cmd.scheduled_start = scheduled_dt
+
+
+        # ✅ LẤY MW THẬT TẠI THỜI ĐIỂM BẮT ĐẦU
+        profile_now = self.build_current_profile()
+        top_xy = profile_now.get("joined_xy") or profile_now.get("main_xy")
+        if top_xy:
+            start_mw_at_sched = get_mw_at(top_xy, scheduled_dt)
+        else:
+            # fallback nếu chưa có series
+            start_mw_at_sched = self.next_cmd_anchor_mw if (self.next_cmd_anchor_mw is not None) else self.threshold_429
+
+        new_cmd.start_mw = start_mw_at_sched
+
         self.command_queue.append(new_cmd)
         self.rebuild_joined_plan()
         # Từ bây giờ mới cắt main trên plot
@@ -706,11 +762,15 @@ class PowerChangeWidget(QWidget):
             self.result_panel.set_override_complete(new_cmd.hold_start.strftime("%H:%M"))
         else:
             self.result_panel.set_override_complete(None)
+        self.next_cmd_anchor_time = None
+        self.next_cmd_anchor_mw = None
         self.update_plot() 
     def _validate_and_schedule_next_command(self, new_cmd: Command) -> tuple[bool, datetime, str]:
         """
-        target > 429 -> TĂNG  ⇒ bắt đầu sau HOLD_END(429)
-        target < 429 -> GIẢM  ⇒ bắt đầu sau HOLD_END(429) + 45'
+        Chuẩn hoá thời điểm bắt đầu lệnh nối:
+        - Nếu lệnh mới NẰM TRONG vùng FLAT (hold) của lệnh trước: dời tới CUỐI FLAT.
+        - Nếu lệnh mới NẰM SAU FLAT: bắt đầu NGAY (không chờ 45' cho lệnh giảm).
+        Trả về: (ok, scheduled_start, msg). ok=False nếu có dịch chuyển để UI hiển thị dialog.
         """
         prev_hold_start, prev_hold_end = self._compute_last_command_hold_window()
         if prev_hold_start is None or prev_hold_end is None:
@@ -718,27 +778,21 @@ class PowerChangeWidget(QWidget):
 
         user_dt = new_cmd.start_time
 
-        pivot = self.threshold_429  # 429.0
-        is_increasing = new_cmd.target_mw > pivot
-
-        # ✅ Quy tắc đúng:
-        required_start = prev_hold_end if is_increasing else (prev_hold_end + timedelta(minutes=45))
-
-        in_hold_window = (prev_hold_start is not None and prev_hold_start <= user_dt <= prev_hold_end)
-        if in_hold_window:
-            scheduled_start = required_start
-            return True, scheduled_start, ""
-        else:
-            scheduled_start = required_start
-            action = "Tăng (sau HOLD_END)" if is_increasing else "Giảm (sau HOLD_END + 45')"
+        # Trong FLAT → dời tới cuối FLAT
+        in_flat = (prev_hold_start is not None and prev_hold_end is not None
+                and prev_hold_start <= user_dt <= prev_hold_end)
+        if in_flat:
+            scheduled_start = prev_hold_end
             msg = (
-                "Thời điểm anh nhập nằm trong giai đoạn HOLD của lệnh trước.\n"
-                "Để đảm bảo hold đủ thời gian, lệnh kế sẽ được tự động dời theo quy định:\n"
-                f"- {action} theo mốc 429 MW.\n"
-                f"Giờ người nhập: {user_dt.strftime('%H:%M')}\n"
-                f"Giờ yêu cầu:    {scheduled_start.strftime('%H:%M')}"
+                "Lệnh mới đang NẰM TRONG vùng FLAT (hold), hệ thống sẽ dời tới CUỐI FLAT.\n"
+                f"Giờ người nhập/neo: {user_dt.strftime('%H:%M')}\n"
+                f"Cuối FLAT:          {scheduled_start.strftime('%H:%M')}"
             )
             return False, scheduled_start, msg
+
+        # Sau FLAT → bắt đầu ngay (cả tăng lẫn giảm)
+        scheduled_start = user_dt
+        return True, scheduled_start, ""
 
 
 
@@ -802,7 +856,7 @@ class PowerChangeWidget(QWidget):
                 scheduled = cmd.scheduled_start
 
             segs, h_start, h_end = self._build_segments_for_one_command(
-                start_mw=self.threshold_429,
+                start_mw=cmd.start_mw,
                 target_mw=cmd.target_mw,
                 start_dt=scheduled,
                 hold_minutes=cmd.hold_minutes
@@ -972,5 +1026,143 @@ class PowerChangeWidget(QWidget):
         # self.join_time_edit.editingFinished.connect(self.on_add_command_via_enter)
         self.add_cmd_btn.clicked.connect(self.on_add_command_via_enter)
 
+        # --- NÚT HOLD NOW nằm cùng hàng với Override Target ---
+        self.btn_hold_now = QPushButton("Hold Now", self)
+        self.btn_hold_now.setToolTip("Đóng băng tại thời điểm bấm; MW hiện tại sẽ là điểm bắt đầu cho lệnh nối kế tiếp")
+        self.btn_hold_now.setFixedWidth(100)  # tùy chọn
+        self.btn_hold_now.clicked.connect(self.on_hold_now_clicked)
+
+        # Sắp xếp: [Override Target] [Timeline] [Enter] [Hold Now] ... 
+        join_row.addWidget(self.btn_hold_now)
 
 
+
+
+    def on_hold_now_clicked(self):
+        # 1) Ghi thời điểm hold
+        self.hard_hold_dt = datetime.now()
+        self.hard_hold_active = True
+
+        # 2) Lấy profile hiện tại (hàm anh đang có để build state vẽ)
+        profile = self.build_current_profile()  # trả về dict: {"main_xy", "joined_xy", "markers", ...}
+
+        # Ưu tiên 'joined_xy' nếu có, vì nó là đường thực tế sau ghi đè; nếu không thì dùng main_xy
+        top_xy = profile.get("joined_xy") or profile.get("main_xy")
+        if not top_xy:
+            QMessageBox.warning(self, "Hold", "Chưa có profile để Hold.")
+            return
+
+        # 3) Tính MW tức thời tại hard_hold_dt
+        mw_now = get_mw_at(top_xy, self.hard_hold_dt)
+        self.hard_hold_mw = mw_now
+
+        # 4) Đặt 'neo' cho lệnh thêm kế tiếp theo luật "trong/ngoài hold"
+        prev_hold_start, prev_hold_end = self._compute_last_command_hold_window()
+        now_dt = self.hard_hold_dt
+
+        if (prev_hold_start is not None) and (prev_hold_end is not None) and (prev_hold_start <= now_dt <= prev_hold_end):
+            # ĐANG Ở TRONG CỬA SỔ HOLD -> duy trì đến HÊT HOLD, neo về hold_end
+            self.next_cmd_anchor_time = prev_hold_end
+            # MW tại hold_end (thường là plateau 429); tính chính xác theo profile
+            top_xy = profile.get("joined_xy") or profile.get("main_xy")
+            self.next_cmd_anchor_mw = get_mw_at(top_xy, prev_hold_end) if top_xy else self.threshold_429
+        else:
+            # ĐÃ QUA HOLD_END -> neo tại thời điểm bấm (tăng sẽ start ngay, giảm xử lý ở bước 2)
+            self.next_cmd_anchor_time = now_dt
+            self.next_cmd_anchor_mw = mw_now
+
+
+        # 6) Cắt profile đến thời điểm hold và vẽ lại
+        self.refresh_after_hold(profile)
+        try:
+            QMessageBox.information(
+                self, "HOLD",
+                f"Đã dừng tại {self.hard_hold_dt:%H:%M:%S}, MW hiện tại: {mw_now:.1f}. "
+                "Lệnh thêm kế tiếp sẽ bắt đầu từ mốc này."
+            )
+        except Exception:
+            pass
+
+    def refresh_after_hold(self, profile: dict | None = None):
+        if profile is None:
+            profile = self.build_current_profile()
+
+        if self.hard_hold_active and self.hard_hold_dt is not None:
+            main_xy  = trim_xy_until(profile.get("main_xy"),  self.hard_hold_dt) if profile.get("main_xy")  else None
+            joined_xy= trim_xy_until(profile.get("joined_xy"),self.hard_hold_dt) if profile.get("joined_xy") else None
+
+            # Lọc markers ≤ hold_dt
+            hold_dt = self.hard_hold_dt
+            markers_in = profile.get("markers") or {}
+            markers = {k: v for k, v in markers_in.items() if (v is not None and v <= hold_dt)}
+            # thêm HARD HOLD để vẽ vạch
+            markers["hard_hold"] = hold_dt
+
+            # VẼ LẠI bằng draw_main_and_joined (vì không có self.draw_series)
+            self.ax.clear()
+            draw_main_and_joined(
+                self.ax,
+                main_xy=main_xy,
+                joined_segments=(
+                    [{"t": t, "mw": y} for t, y in zip(joined_xy["x"], joined_xy["y"])]
+                    if joined_xy else None
+                ),
+                hold_windows=None,                # đã cắt sau hold nên không cần
+                override_point=None,
+                trim_time=None, trim_mw=None,     # đã trim ở trên
+                start_time=None, start_mw=None,
+            )
+            # vẽ vạch HARD HOLD
+            try:
+                self.ax.axvline(hold_dt, linestyle="--", linewidth=1.5)
+                y_top = self.ax.get_ylim()[1]
+                self.ax.text(hold_dt, y_top, "HOLD", va="top", ha="right", fontsize=9)
+            except Exception as _e:
+                print("[WARN] draw hard_hold marker failed:", _e)
+
+            self.figure.autofmt_xdate()
+            self.canvas.draw()
+
+            if hasattr(self, "result_panel") and self.result_panel:
+                # nếu ResultPanel có API này:
+                try:
+                    self.result_panel.update_from_markers(markers)
+                except Exception:
+                    pass
+        else:
+            self.compute_and_refresh()
+
+
+
+    def build_current_profile(self) -> dict:
+        """
+        Trả về dict:
+        - main_xy: {"x": [dt...], "y": [mw...]}
+        - joined_xy: {"x": [dt...], "y": [mw...]}  (nếu có self.current_plan_segments)
+        - markers: dict các mốc thời gian quan trọng
+        """
+        # main
+        main_xy = None
+        if self.times1 and self.powers1:
+            main_xy = {"x": list(self.times1), "y": list(self.powers1)}
+
+        # joined (từ kế hoạch nối lệnh)
+        joined_xy = None
+        if self.current_plan_segments:
+            jx = [seg["t"] for seg in self.current_plan_segments]
+            jy = [seg["mw"] for seg in self.current_plan_segments]
+            joined_xy = {"x": jx, "y": jy}
+
+        # markers
+        markers = {
+            "t_429":          getattr(self, "time_reaching_429", None),
+            "post_pause":     getattr(self, "post_pause_time", None),
+            "hold_start_462": getattr(self, "time_holding_462", None),
+            "hold_end_462":   getattr(self, "hold_complete_time", None),
+            "final":          getattr(self, "final_load_time", None),
+            "override_done":  getattr(self, "override_complete_time", None),
+        }
+        # loại None
+        markers = {k: v for k, v in markers.items() if v is not None}
+
+        return {"main_xy": main_xy, "joined_xy": joined_xy, "markers": markers}
