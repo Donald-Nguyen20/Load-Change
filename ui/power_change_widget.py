@@ -45,7 +45,7 @@ class PowerChangeWidget(QWidget):
         super().__init__(parent)
 
         # --- services/state ---
-        self.excel_updater = ExcelUpdater(excel_file)
+        # self.excel_updater = ExcelUpdater(excel_file)
         self.alarm_played_for_429 = False
         self.alarm_played_for_post_pause = False
         self.alarm_played_for_final_load = False
@@ -335,20 +335,20 @@ class PowerChangeWidget(QWidget):
         # Vẽ đồ thị
         self.update_plot()
 
-        # --- GHI EXCEL ---
-        copy_text = (
-            f"Decrease Unit load to {target_power} MW/Giảm tải xuống {target_power} MW"
-            if start_power > target_power else
-            f"Increase Unit load to {target_power} MW/Tăng tải lên {target_power} MW"
-        )
-        data = {
-            "time_now": datetime.now(),
-            "start_power": start_power,
-            "target_power": target_power,
-            "start_time_str": start_dt.strftime("%H:%M"),  # thay vì biến cũ
-            "copy_text": copy_text,
-        }
-        self.excel_updater.append_data(data)
+        # # --- GHI EXCEL ---
+        # copy_text = (
+        #     f"Decrease Unit load to {target_power} MW/Giảm tải xuống {target_power} MW"
+        #     if start_power > target_power else
+        #     f"Increase Unit load to {target_power} MW/Tăng tải lên {target_power} MW"
+        # )
+        # data = {
+        #     "time_now": datetime.now(),
+        #     "start_power": start_power,
+        #     "target_power": target_power,
+        #     "start_time_str": start_dt.strftime("%H:%M"),  # thay vì biến cũ
+        #     "copy_text": copy_text,
+        # }
+        # self.excel_updater.append_data(data)
 
 
     def on_hold_clicked(self):
@@ -368,11 +368,11 @@ class PowerChangeWidget(QWidget):
             'holding_load': f"Hold the load at {holding_load} MW/ Giữ tải tại {holding_load} MW",
         }
         # (SỬA) dùng hàm đúng tên trong ExcelUpdater đã tách
-        if hasattr(self.excel_updater, "append_data_hold"):
-            self.excel_updater.append_data_hold(data1)
-        else:
-            # fallback nếu class cũ
-            self.excel_updater.append_data1(data1)
+        # if hasattr(self.excel_updater, "append_data_hold"):
+        #     self.excel_updater.append_data_hold(data1)
+        # else:
+        #     # fallback nếu class cũ
+        #     self.excel_updater.append_data1(data1)
 
     def on_reset_clicked(self):
         # 1) Xoá inputs
@@ -584,6 +584,7 @@ class PowerChangeWidget(QWidget):
                     if not joined_df.empty:
                         self.ax.plot(
                             joined_df["t"], joined_df["mw"],
+                            color="blue",
                             linestyle="--", linewidth=1.2, alpha=0.9,
                             label="DF joined (check)", zorder=5
                         )
@@ -816,7 +817,7 @@ class PowerChangeWidget(QWidget):
 
         self.current_plan_segments = plan_segments
         self.update_plot()
-        self.persist_plan_to_excel()
+        # self.persist_plan_to_excel()
     
     def render_plan(self):
         """Vẽ timeline của queue nối lệnh từ self.current_plan_segments."""
@@ -853,28 +854,28 @@ class PowerChangeWidget(QWidget):
         self.canvas.draw_idle()
 
 
-    def persist_plan_to_excel(self):
-        """
-        Ghi timeline tối giản vào Excel.
-        Yêu cầu ExcelUpdater có append_rows(list[dict]) hoặc append_data(dict) (fallback).
-        """
-        if not self.current_plan_segments:
-            return
+    # def persist_plan_to_excel(self):
+    #     """
+    #     Ghi timeline tối giản vào Excel.
+    #     Yêu cầu ExcelUpdater có append_rows(list[dict]) hoặc append_data(dict) (fallback).
+    #     """
+    #     if not self.current_plan_segments:
+    #         return
 
-        rows = []
-        for seg in self.current_plan_segments:
-            rows.append({
-                "Time": seg["t"].strftime("%Y-%m-%d %H:%M:%S"),
-                "MW": seg["mw"],
-                "Tag": seg.get("tag", ""),
-            })
+    #     rows = []
+    #     for seg in self.current_plan_segments:
+    #         rows.append({
+    #             "Time": seg["t"].strftime("%Y-%m-%d %H:%M:%S"),
+    #             "MW": seg["mw"],
+    #             "Tag": seg.get("tag", ""),
+    #         })
 
-        if hasattr(self.excel_updater, "append_rows"):
-            self.excel_updater.append_rows(rows)
-        else:
-            # fallback nếu class cũ chỉ có append_data
-            for r in rows:
-                self.excel_updater.append_data(r)
+        # if hasattr(self.excel_updater, "append_rows"):
+        #     self.excel_updater.append_rows(rows)
+        # else:
+        #     # fallback nếu class cũ chỉ có append_data
+        #     for r in rows:
+        #         self.excel_updater.append_data(r)
 
     
     def _compute_last_command_hold_window(self) -> tuple[datetime | None, datetime | None]:

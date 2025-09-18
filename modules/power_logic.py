@@ -24,6 +24,12 @@ class CalcResult:
     time_holding_462: Optional[datetime]
     hold_complete_time: Optional[datetime]
 
+def _parse_time_flex(s: str) -> datetime:
+    try:
+        return datetime.strptime(s, "%H:%M:%S")
+    except ValueError:
+        return datetime.strptime(s, "%H:%M")
+
 def compute_power_change_and_pauses(
     start_power: float,
     target_power: float,
@@ -31,16 +37,13 @@ def compute_power_change_and_pauses(
     cfg: CalcConfig,
 ) -> CalcResult:
     """
-    Tính timeline tăng/giảm tải theo phút, áp dụng pause tại mốc 429 MW và holding MW.
-    - KHÔNG phụ thuộc UI.
-    - Trả về toàn bộ mốc thời gian và profile để UI tự render/hiển thị.
-
-    Quy ước ramp:
-      <330 MW: 6.6 MW/phút
-      >=330 MW: 13.2 MW/phút
+    Tính timeline tăng/giảm tải theo GIÂY, áp dụng pause tại mốc 429 MW và holding MW.
+    Quy ước ramp mới:
+      <330 MW: 0.11 MW/giây   (tương đương 6.6 MW/phút)
+      >=330 MW: 0.22 MW/giây  (tương đương 13.2 MW/phút)
     """
     if isinstance(start_time, str):
-        start_time = datetime.strptime(start_time, "%H:%M")
+        start_time = _parse_time_flex(start_time)
 
     current_power = float(start_power)
     increasing = start_power < target_power
@@ -56,12 +59,15 @@ def compute_power_change_and_pauses(
 
     t = start_time
 
-    # Safety cap để tránh vòng lặp vô hạn (ví dụ nhập sai)
-    MAX_MINUTES = 24 * 60
+    # Bước thời gian theo giây
+    STEP = timedelta(seconds=1)
+    # Tránh vòng lặp vô hạn (1 ngày = 86400 bước)
+    MAX_SECONDS = 24 * 60 * 60
+    EPS = 1e-9
 
-    for _ in range(MAX_MINUTES):
-        # chọn tốc độ theo ngưỡng 330
-        power_change = 6.6 if current_power < 330 else 13.2
+    for _ in range(MAX_SECONDS):
+        # tốc độ theo ngưỡng 330 MW (đơn vị MW/giây)
+        power_rate = 0.11 if current_power < 330 else 0.22
 
         if increasing:
             # chạm 429 khi đang tăng
@@ -70,7 +76,6 @@ def compute_power_change_and_pauses(
                 and time_reaching_429 is None):
                 time_reaching_429 = t
                 if not pause_time_added:
-                    # Mode ảnh hưởng thời gian pause
                     if cfg.pulverizer_mode == "3 Puls":
                         t += timedelta(minutes=15)
                     else:  # 4 Puls
@@ -79,10 +84,10 @@ def compute_power_change_and_pauses(
                     pause_time_added = True
 
             # clamp bước cuối
-            if current_power + power_change > target_power:
-                power_change = target_power - current_power
+            if current_power + power_rate > target_power:
+                power_rate = max(0.0, target_power - current_power)
 
-            current_power += power_change
+            current_power += power_rate
 
         else:
             # Giữ tại holding MW khi đang GIẢM
@@ -111,18 +116,18 @@ def compute_power_change_and_pauses(
                     pause_time_added = True
 
             # clamp bước cuối
-            if current_power - power_change < target_power:
-                power_change = current_power - target_power
+            if current_power - power_rate < target_power:
+                power_rate = max(0.0, current_power - target_power)
 
-            current_power -= power_change
+            current_power -= power_rate
 
-        # tiến thời gian 1 phút + lưu điểm
-        t += timedelta(minutes=1)
+        # tiến thời gian 1 giây + lưu điểm
+        t += STEP
         times.append(t)
         powers.append(current_power)
 
         # dừng khi đạt target
-        if abs(current_power - target_power) < 1e-9:
+        if abs(current_power - target_power) < EPS:
             break
 
     final_load_time = t
