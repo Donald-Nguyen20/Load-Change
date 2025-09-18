@@ -7,6 +7,8 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QTimeEdit,
     QPushButton, QComboBox, QMessageBox, QFrame
 )
+from PySide6.QtGui import QDoubleValidator
+from matplotlib import dates as mdates
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
@@ -46,7 +48,6 @@ class PowerChangeWidget(QWidget):
         super().__init__(parent)
 
         # --- services/state ---
-        self.excel_updater = ExcelUpdater(excel_file)
         self.alarm_played_for_429 = False
         self.alarm_played_for_post_pause = False
         self.alarm_played_for_final_load = False
@@ -106,6 +107,8 @@ class PowerChangeWidget(QWidget):
         self._live_start_time = True    # Start Time auto-run ban đầu
         self._live_hold_time  = True    # True để chạy lifetime
         self._live_join_time  = True
+        self._live_holdnow_time = True  # auto-update ô Edit Time của Hold Now
+        self._live_holdnow_mw = True  # auto-update ô Hold MW khi chưa bị người dùng chỉnh
         self._time_timer = QTimer(self)
         self._time_timer.timeout.connect(self._tick_time_edits)
         self._time_timer.start(1000)    # tick mỗi giây
@@ -350,20 +353,6 @@ class PowerChangeWidget(QWidget):
         # Vẽ đồ thị
         self.update_plot()
 
-        # --- GHI EXCEL ---
-        copy_text = (
-            f"Decrease Unit load to {target_power} MW/Giảm tải xuống {target_power} MW"
-            if start_power > target_power else
-            f"Increase Unit load to {target_power} MW/Tăng tải lên {target_power} MW"
-        )
-        data = {
-            "time_now": datetime.now(),
-            "start_power": start_power,
-            "target_power": target_power,
-            "start_time_str": start_dt.strftime("%H:%M"),  # thay vì biến cũ
-            "copy_text": copy_text,
-        }
-        self.excel_updater.append_data(data)
 
 
     def on_hold_clicked(self):
@@ -382,20 +371,9 @@ class PowerChangeWidget(QWidget):
             'holding_time': holding_time,
             'holding_load': f"Hold the load at {holding_load} MW/ Giữ tải tại {holding_load} MW",
         }
-        # (SỬA) dùng hàm đúng tên trong ExcelUpdater đã tách
-        if hasattr(self.excel_updater, "append_data_hold"):
-            self.excel_updater.append_data_hold(data1)
-        else:
-            # fallback nếu class cũ
-            self.excel_updater.append_data1(data1)
+
 
     def on_reset_clicked(self):
-        # 1) Xoá inputs
-        # self.start_power_edit.clear()
-        # self.target_power_edit.clear()
-        # self.start_time_edit.clear()
-        # self.holding_load_edit.clear()
-        # self.holding_time_edit.clear()
         # Đặt lại QTimeEdit
         self.start_time_edit.setTime(QTime.currentTime())
         self.holding_time_edit.setTime(QTime.currentTime()) 
@@ -416,8 +394,13 @@ class PowerChangeWidget(QWidget):
         self.override_complete_time = None
         self.alarm_played_for_override = False
         self._cut_after_join = False
-
-
+        self._live_holdnow_mw = True
+        if hasattr(self, "hold_now_mw_edit") and self.hold_now_mw_edit is not None:
+            self.hold_now_mw_edit.clear()
+        # Reset Edit Time về auto
+        self._live_holdnow_time = True
+        if hasattr(self, "hold_now_time_edit") and self.hold_now_time_edit is not None:
+            self.hold_now_time_edit.setTime(QTime.currentTime())
 
         # 3) Reset panel kết quả (DÙNG API ResultPanel)
         self.result_panel.reset()
@@ -443,6 +426,22 @@ class PowerChangeWidget(QWidget):
         self.ax.set_xlabel('TIMES')
         self.ax.set_ylabel('POWER (MW)')
         self.canvas.draw()
+
+        # 6) RESET HOLD NOW / ANCHOR ---
+        self.hard_hold_active = False
+        self.hard_hold_dt = None
+        self.hard_hold_mw = None
+
+        self.next_cmd_anchor_time = None
+        self.next_cmd_anchor_mw = None
+
+        # nếu trước đó có stop() trong Hold Now thì bật lại check_timer
+        if hasattr(self, "check_timer") and self.check_timer is not None:
+            try:
+                if not self.check_timer.isActive():
+                    self.check_timer.start(1000)
+            except Exception:
+                pass
 
 
     # ----------------------
@@ -587,16 +586,37 @@ class PowerChangeWidget(QWidget):
             trim_time=trim_time, trim_mw=trim_mw,
             start_time=start_time, start_mw=start_mw,
         )
-        # >>> STEP5: DRAW HARD HOLD MARKER (BEGIN)
+        # >>> STEP5: HARD HOLD (thật) hoặc PREVIEW (khi chưa bấm Hold Now)
         if self.hard_hold_active and self.hard_hold_dt is not None:
+            # Vạch HOLD thật (đứng yên)
             try:
-                self.ax.axvline(self.hard_hold_dt, linestyle="--", linewidth=1.5)  # không set màu để giữ style mặc định
-                # Nhãn nho nhỏ trên đỉnh trục Y để dễ nhìn
+                self.ax.axvline(self.hard_hold_dt, linestyle="--", linewidth=1.5)
                 y_top = self.ax.get_ylim()[1]
                 self.ax.text(self.hard_hold_dt, y_top, "HOLD", va="top", ha="right", fontsize=9)
             except Exception as _e:
                 print("[WARN] draw hard_hold marker failed:", _e)
-        # >>> STEP5: DRAW HARD HOLD MARKER (END)
+        else:
+            # PREVIEW: auto = now, manual = theo Edit Time
+            try:
+                if getattr(self, "_live_holdnow_time", True) is True or not hasattr(self, "hold_now_time_edit"):
+                    hold_dt_preview = datetime.now()
+                else:
+                    t = self.hold_now_time_edit.time()
+                    hold_dt_preview = datetime.now().replace(hour=t.hour(), minute=t.minute(), second=0, microsecond=0)
+
+                # >>> đảm bảo trục X bao trùm thời điểm PREVIEW
+                x0, x1 = self.ax.get_xlim()
+                tnum = mdates.date2num(hold_dt_preview)
+                if tnum < x0 or tnum > x1:
+                    self.ax.set_xlim(min(x0, tnum), max(x1, tnum))
+
+                self.ax.axvline(hold_dt_preview, linestyle=":", linewidth=1.2, alpha=0.5)
+                y_top = self.ax.get_ylim()[1]
+                self.ax.text(hold_dt_preview, y_top, "PREVIEW", va="top", ha="right", fontsize=8, alpha=0.7)
+            except Exception:
+                pass
+        # >>> END STEP5
+
 
         # --- OVERLAY: vẽ lại từ DataFrame để đối chiếu chính xác ---
         try:
@@ -642,7 +662,7 @@ class PowerChangeWidget(QWidget):
         self.figure.autofmt_xdate()
         self.canvas.draw()
 
-
+######################chức năng auto update time và MW theo thời gian thực######################
     def _tick_time_edits(self):
         now = QTime.currentTime()
         # Cập nhật nếu đang ở chế độ live và không có focus (tránh ghi đè khi người dùng đang gõ)
@@ -653,6 +673,34 @@ class PowerChangeWidget(QWidget):
         if getattr(self, "_live_join_time", False) and getattr(self, "join_time_edit", None) is not None \
                 and not self.join_time_edit.hasFocus():
             self.join_time_edit.setTime(now)
+        # Auto-update Edit Time (Hold Now) nếu đang bật auto & không focus
+        if getattr(self, "_live_holdnow_time", False) and hasattr(self, "hold_now_time_edit") \
+        and self.hold_now_time_edit is not None and not self.hold_now_time_edit.hasFocus():
+            self.hold_now_time_edit.setTime(QTime.currentTime())
+
+        # Auto-update Hold MW nếu đang bật auto & ô không focus
+        try:
+            if getattr(self, "_live_holdnow_mw", False) and hasattr(self, "hold_now_mw_edit") \
+            and (self.hold_now_mw_edit is not None) and (not self.hold_now_mw_edit.hasFocus()):
+                # Lấy MW tức thời từ series (ưu tiên joined nếu có)
+                profile_now = self.build_current_profile()
+                top_xy = profile_now.get("joined_xy") or profile_now.get("main_xy")
+                if top_xy:
+                    mw_now = get_mw_at(top_xy, datetime.now())
+                    if mw_now is not None:
+                        # hiển thị gọn 1 chữ số thập phân
+                        self.hold_now_mw_edit.setText(f"{mw_now:.1f}")
+        # Refresh vạch PREVIEW theo thời gian thực khi chưa Hold Now
+        except Exception:
+            pass
+        try:
+            if not self.hard_hold_active:
+                self.update_plot()
+        except Exception:
+            pass
+
+
+
 
     # ----------------------
     # Alarm checking (no clock UI)
@@ -870,7 +918,7 @@ class PowerChangeWidget(QWidget):
 
         self.current_plan_segments = plan_segments
         self.update_plot()
-        self.persist_plan_to_excel()
+
     
     def render_plan(self):
         """Vẽ timeline của queue nối lệnh từ self.current_plan_segments."""
@@ -907,30 +955,7 @@ class PowerChangeWidget(QWidget):
         self.canvas.draw_idle()
 
 
-    def persist_plan_to_excel(self):
-        """
-        Ghi timeline tối giản vào Excel.
-        Yêu cầu ExcelUpdater có append_rows(list[dict]) hoặc append_data(dict) (fallback).
-        """
-        if not self.current_plan_segments:
-            return
 
-        rows = []
-        for seg in self.current_plan_segments:
-            rows.append({
-                "Time": seg["t"].strftime("%Y-%m-%d %H:%M:%S"),
-                "MW": seg["mw"],
-                "Tag": seg.get("tag", ""),
-            })
-
-        if hasattr(self.excel_updater, "append_rows"):
-            self.excel_updater.append_rows(rows)
-        else:
-            # fallback nếu class cũ chỉ có append_data
-            for r in rows:
-                self.excel_updater.append_data(r)
-
-    
     def _compute_last_command_hold_window(self) -> tuple[datetime | None, datetime | None]:
         # Nếu đã có lệnh nối → giữ nguyên như anh đang làm (quét từ command_queue / segments)
         if self.command_queue:
@@ -1009,6 +1034,37 @@ class PowerChangeWidget(QWidget):
 
         self.add_cmd_btn = QPushButton("Enter", self)
         join_row.addWidget(self.add_cmd_btn)
+        ####################### 3 THÀNH PHẦN Hold Now #######################
+        # --- Ô Hold MW (auto editable) + nút Hold Now ---
+        join_row.addWidget(QLabel("Hold MW:"))
+        self.hold_now_mw_edit = QLineEdit(self)
+        self.hold_now_mw_edit.setFixedWidth(80)
+        self.hold_now_mw_edit.setPlaceholderText("auto")
+        self.hold_now_mw_edit.setValidator(QDoubleValidator(0.0, 2000.0, 2, self))  # giới hạn 0..2000 MW, 2 số lẻ
+        join_row.addWidget(self.hold_now_mw_edit)
+
+        def _stop_live_holdmw():
+            # khi người dùng nhập tay -> tắt auto
+            self._live_holdnow_mw = False
+        self.hold_now_mw_edit.editingFinished.connect(_stop_live_holdmw)
+
+        # ---- Ô Edit Time cho Hold Now (đặt giữa Hold MW và Hold Now) ----
+        join_row.addWidget(QLabel("Edit Time:"))
+        self.hold_now_time_edit = QTimeEdit(self)
+        self.hold_now_time_edit.setDisplayFormat("HH:mm")
+        self.hold_now_time_edit.setTime(QTime.currentTime())
+        self.hold_now_time_edit.setFixedWidth(80)
+        def _stop_live_holdnow_time():
+            self._live_holdnow_time = False
+        self.hold_now_time_edit.editingFinished.connect(_stop_live_holdnow_time)
+        join_row.addWidget(self.hold_now_time_edit)
+
+        # Nút Hold Now (đã di chuyển sang đây)
+        self.btn_hold_now = QPushButton("Hold Now", self)
+        self.btn_hold_now.setToolTip("Dừng tại thời điểm bấm; MW dùng ô 'Hold MW' (nếu nhập), \
+        hoặc tự lấy theo dữ liệu hiện tại khi để trống/auto")
+        self.btn_hold_now.clicked.connect(self.on_hold_now_clicked)
+        join_row.addWidget(self.btn_hold_now)
 
         join_row.addStretch(1)
         parent_layout.addLayout(join_row)
@@ -1026,21 +1082,15 @@ class PowerChangeWidget(QWidget):
         # self.join_time_edit.editingFinished.connect(self.on_add_command_via_enter)
         self.add_cmd_btn.clicked.connect(self.on_add_command_via_enter)
 
-        # --- NÚT HOLD NOW nằm cùng hàng với Override Target ---
-        self.btn_hold_now = QPushButton("Hold Now", self)
-        self.btn_hold_now.setToolTip("Đóng băng tại thời điểm bấm; MW hiện tại sẽ là điểm bắt đầu cho lệnh nối kế tiếp")
-        self.btn_hold_now.setFixedWidth(100)  # tùy chọn
-        self.btn_hold_now.clicked.connect(self.on_hold_now_clicked)
-
-        # Sắp xếp: [Override Target] [Timeline] [Enter] [Hold Now] ... 
-        join_row.addWidget(self.btn_hold_now)
-
-
-
-
     def on_hold_now_clicked(self):
-        # 1) Ghi thời điểm hold
-        self.hard_hold_dt = datetime.now()
+        # 1) Thời điểm hold: now hoặc theo Edit Time nếu user chỉnh tay
+        if getattr(self, "_live_holdnow_time", True) is True or not hasattr(self, "hold_now_time_edit"):
+            hold_dt = datetime.now()
+        else:
+            t = self.hold_now_time_edit.time()
+            hold_dt = datetime.now().replace(hour=t.hour(), minute=t.minute(), second=0, microsecond=0)
+
+        self.hard_hold_dt = hold_dt
         self.hard_hold_active = True
 
         # 2) Lấy profile hiện tại (hàm anh đang có để build state vẽ)
@@ -1052,13 +1102,44 @@ class PowerChangeWidget(QWidget):
             QMessageBox.warning(self, "Hold", "Chưa có profile để Hold.")
             return
 
-        # 3) Tính MW tức thời tại hard_hold_dt
-        mw_now = get_mw_at(top_xy, self.hard_hold_dt)
+        # 3) Tính MW tức thời tại hard_hold_dt (ưu tiên giá trị người dùng nhập)
+        # mw_now = None
+        # # nếu ô Hold MW có số hợp lệ -> dùng luôn
+        # try:
+        #     txt = self.hold_now_mw_edit.text().strip() if hasattr(self, "hold_now_mw_edit") else ""
+        #     if txt != "":
+        #         mw_now = float(txt)
+        #         # đã nhập tay -> tắt auto để không bị ghi đè
+        #         self._live_holdnow_mw = False
+        # except Exception:
+        #     mw_now = None
+
+        # if mw_now is None:
+        #     # auto: lấy từ profile
+        #     mw_now = get_mw_at(top_xy, self.hard_hold_dt)
+
+        # self.hard_hold_mw = mw_now
+
+        # 3) MW tại hold_dt (ưu tiên người dùng nhập)
+        mw_now = None
+        try:
+            txt = self.hold_now_mw_edit.text().strip() if hasattr(self, "hold_now_mw_edit") else ""
+            if txt != "":
+                mw_now = float(txt)
+                self._live_holdnow_mw = False
+        except Exception:
+            mw_now = None
+
+        if mw_now is None:
+            mw_now = get_mw_at(top_xy, hold_dt)
+
         self.hard_hold_mw = mw_now
+
+
 
         # 4) Đặt 'neo' cho lệnh thêm kế tiếp theo luật "trong/ngoài hold"
         prev_hold_start, prev_hold_end = self._compute_last_command_hold_window()
-        now_dt = self.hard_hold_dt
+        now_dt = hold_dt
 
         if (prev_hold_start is not None) and (prev_hold_end is not None) and (prev_hold_start <= now_dt <= prev_hold_end):
             # ĐANG Ở TRONG CỬA SỔ HOLD -> duy trì đến HÊT HOLD, neo về hold_end
@@ -1166,3 +1247,6 @@ class PowerChangeWidget(QWidget):
         markers = {k: v for k, v in markers.items() if v is not None}
 
         return {"main_xy": main_xy, "joined_xy": joined_xy, "markers": markers}
+
+
+#ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
