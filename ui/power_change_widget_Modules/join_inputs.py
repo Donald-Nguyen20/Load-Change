@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import QDoubleValidator
 
-from ui.power_change_widget_Modules.hold_actions import hold_now_clicked
+from ui.power_change_widget_modules.hold_actions import hold_now_clicked
 
 def build_join_inputs(widget, parent_layout: QVBoxLayout):
     """

@@ -18,30 +18,30 @@ from ui.result_panel import ResultPanel
 from modules.plotting import draw_main_and_joined 
 import os  # nếu anh dùng đường dẫn ghi file
 from modules.Hold_module import get_mw_at, trim_xy_until
-from ui.power_change_widget_Modules.profile_builder import build_current_profile_from_widget
-from ui.power_change_widget_Modules.hold_refresh import refresh_after_hold  # thêm ở đầu file
-from ui.power_change_widget_Modules.hold_actions import hold_now_clicked as _hold_now_clicked
-from ui.power_change_widget_Modules.join_inputs import build_join_inputs as _build_join_inputs
-from ui.power_change_widget_Modules.plan_timing import (get_last_command_hold_window as _get_last_command_hold_window, get_last_command_end_time as _get_last_command_end_time,)
-from ui.power_change_widget_Modules.enter_flow import on_enter_clicked as _on_enter_clicked
-from ui.power_change_widget_Modules.queue_plan import (
+from ui.power_change_widget_modules.profile_builder import build_current_profile_from_widget
+from ui.power_change_widget_modules.hold_refresh import refresh_after_hold  # thêm ở đầu file
+from ui.power_change_widget_modules.hold_actions import hold_now_clicked as _hold_now_clicked
+from ui.power_change_widget_modules.join_inputs import build_join_inputs as _build_join_inputs
+from ui.power_change_widget_modules.plan_timing import (get_last_command_hold_window as _get_last_command_hold_window, get_last_command_end_time as _get_last_command_end_time,)
+from ui.power_change_widget_modules.enter_flow import on_enter_clicked as _on_enter_clicked
+from ui.power_change_widget_modules.queue_plan import (
     on_add_command_via_enter as _on_add_command_via_enter,
     _validate_and_schedule_next_command as _validate_and_schedule_next_command_impl,
     _build_segments_for_one_command as _build_segments_for_one_command_impl,
     rebuild_joined_plan as _rebuild_joined_plan,
     render_plan as _render_plan,
 )
-from ui.power_change_widget_Modules.plot_update import update_plot as _update_plot
-from ui.power_change_widget_Modules.alarms_runtime import check_and_alarm as _check_and_alarm
-from ui.power_change_widget_Modules.ui_builders import (
+from ui.power_change_widget_modules.plot_update import update_plot as _update_plot
+from ui.power_change_widget_modules.alarms_runtime import check_and_alarm as _check_and_alarm
+from ui.power_change_widget_modules.ui_builders import (
     build_ui as _build_ui_impl,
     labeled_edit as _labeled_edit_impl,
     labeled_timeedit as _labeled_timeedit_impl,
     toggle_hidden_layout as _toggle_hidden_layout_impl,
 )
-from ui.power_change_widget_Modules.types import Command
-from ui.power_change_widget_Modules.live_updates import tick_time_edits as _tick_time_edits
-from ui.power_change_widget_Modules.reset_actions import on_reset_clicked as _on_reset_clicked
+from ui.power_change_widget_modules.types import Command
+from ui.power_change_widget_modules.live_updates import tick_time_edits as _tick_time_edits
+from ui.power_change_widget_modules.reset_actions import on_reset_clicked as _on_reset_clicked
 
 
 class PowerChangeWidget(QWidget):

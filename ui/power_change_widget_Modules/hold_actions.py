@@ -4,7 +4,7 @@ from datetime import datetime
 from PySide6.QtWidgets import QMessageBox
 
 from modules.Hold_module import get_mw_at
-from ui.power_change_widget_Modules.hold_refresh import refresh_after_hold  # đã tách ở bước trước
+from ui.power_change_widget_modules.hold_refresh import refresh_after_hold  # đã tách ở bước trước
 
 # --- Helpers cục bộ (tránh lặp logic) ----------------------------------------
 def _get_preview_dt(widget) -> datetime:

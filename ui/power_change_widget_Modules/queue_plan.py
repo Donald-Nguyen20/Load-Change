@@ -5,7 +5,7 @@ from PySide6.QtWidgets import QMessageBox
 
 from modules.power_logic import CalcConfig, compute_power_change_and_pauses
 from modules.Hold_module import get_mw_at
-from ui.power_change_widget_Modules.types import Command
+from ui.power_change_widget_modules.types import Command
 
 # -------------------------- API CHÍNH (5 HÀM) --------------------------
 

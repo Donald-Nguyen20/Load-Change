@@ -82,27 +82,73 @@ def _draw_preview_or_hold(widget):
             widget.ax.text(widget.hard_hold_dt, y_top, "HOLD", va="top", ha="right", fontsize=9)
         except Exception as _e:
             print("[WARN] draw hard_hold marker failed:", _e)
-        return
+        # return
 
     # PREVIEW
-    try:
-        if getattr(widget, "_live_holdnow_time", True) is True or not hasattr(widget, "hold_now_time_edit"):
-            hold_dt_preview = datetime.now()
-        else:
-            t = widget.hold_now_time_edit.time()
-            hold_dt_preview = datetime.now().replace(hour=t.hour(), minute=t.minute(), second=0, microsecond=0)
 
-        # đảm bảo trục X bao trùm thời điểm PREVIEW
+        # PREVIEW: mốc chạy theo thời gian + bám MW live
+    try:
+        # (A) Thời điểm preview = NOW để vạch chạy theo thời gian
+        hold_dt_preview = datetime.now()
+
+        # (B) Đảm bảo trục X bao trùm mốc thời gian hiện tại
         x0, x1 = widget.ax.get_xlim()
         tnum = mdates.date2num(hold_dt_preview)
         if tnum < x0 or tnum > x1:
             widget.ax.set_xlim(min(x0, tnum), max(x1, tnum))
 
+        # (C) Xoá marker preview cũ nếu có (tránh chồng vệt)
+        prev = getattr(widget, "_preview_artist", None)
+        if prev is not None:
+            try:
+                prev.remove()
+            except Exception:
+                pass
+            widget._preview_artist = None
+
+        # (D) Vạch dọc thời gian (giữ để dễ quan sát)
         widget.ax.axvline(hold_dt_preview, linestyle=":", linewidth=1.2, alpha=0.5)
-        y_top = widget.ax.get_ylim()[1]
-        widget.ax.text(hold_dt_preview, y_top, "PREVIEW", va="top", ha="right", fontsize=8, alpha=0.7)
+
+        # (E) Lấy MW live và vẽ marker tại (t_now, MW_live)
+        y_live = getattr(widget, "current_power_live_value", None)
+        if y_live is None:
+            # fallback: nội suy trực tiếp nếu tick đầu chưa có biến live
+            prof = getattr(widget, "_last_profile", None) or {}
+            top_xy = prof.get("joined_xy") or prof.get("main_xy")
+            if top_xy:
+                y_live = get_mw_at(top_xy, hold_dt_preview)
+
+        if y_live is not None:
+            widget._preview_artist = widget.ax.scatter([hold_dt_preview], [y_live], s=28, zorder=7)
+            # --- NEW: hiển thị nhãn MW tại mốc preview ---
+        # Xoá text cũ nếu có
+        old_txt = getattr(widget, "_preview_text", None)
+        if old_txt is not None:
+            try:
+                old_txt.remove()
+            except Exception:
+                pass
+            widget._preview_text = None
+
+        # Nội dung nhãn: "xxx.x MW @ HH:MM:SS"
+        try:
+            label = f"{float(y_live):.1f} MW @ {hold_dt_preview:%H:%M:%S}"
+            # Vẽ lệch nhẹ lên trên để không đè vào chấm
+            widget._preview_text = widget.ax.text(
+                hold_dt_preview, y_live,
+                label,
+                fontsize=8, va="bottom", ha="left",
+                zorder=8,
+                bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.7, linewidth=0.0),
+            )
+        except Exception:
+            pass
+
+
     except Exception:
         pass
+
+
 
 def _overlay_df_plot(widget, df):
     """Vẽ overlay từ DataFrame để đối chiếu (main/joined/events)."""
@@ -228,3 +274,7 @@ def update_plot(widget):
     # Render
     widget.figure.autofmt_xdate()
     widget.canvas.draw()
+    try:
+        widget.fig.canvas.draw_idle()
+    except Exception:
+        pass
